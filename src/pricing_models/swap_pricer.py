@@ -57,6 +57,16 @@ def build_tiie_zero_curve_from_valmer(calculation_date: ql.Date) -> ql.YieldTerm
     zc.enableExtrapolation()
     return ql.YieldTermStructureHandle(zc)
 
+
+def make_ftiie_index(curve: ql.YieldTermStructureHandle,
+                     settlement_days: int = 1) -> ql.OvernightIndex:
+    cal = ql.Mexico() if hasattr(ql, "Mexico") else ql.TARGET()
+    try:
+        ccy = ql.MXNCurrency()
+    except Exception:
+        ccy = ql.USDCurrency()  # label only
+    return ql.OvernightIndex("F-TIIE", settlement_days, ccy, cal, ql.Actual360(), curve)
+
 def make_tiie_28d_index(
     curve: ql.YieldTermStructureHandle,
     settlement_days: int = 1,
@@ -351,3 +361,63 @@ def plot_swap_zero_curve(
         plt.show()
 
     return years, zeros
+
+# src/pricing_models/swap_pricer.py
+import QuantLib as ql
+
+import QuantLib as ql
+
+def price_ftiie_ois_with_curve(
+    calculation_date: ql.Date,
+    notional: float,
+    start_date: ql.Date,
+    maturity_date: ql.Date,
+    fixed_rate: float,
+    fixed_leg_tenor: ql.Period,          # e.g., 28D
+    fixed_leg_convention: int,           # ql.ModifiedFollowing
+    fixed_leg_daycount: ql.DayCounter,   # ql.Actual360()
+    on_index: ql.OvernightIndex,         # FTIIE overnight index
+    curve: ql.YieldTermStructureHandle,
+) -> ql.OvernightIndexedSwap:
+    # Consistent evaluation settings (no ‘today’ leakage)
+    ql.Settings.instance().evaluationDate = calculation_date
+    ql.Settings.instance().includeReferenceDateEvents = False
+    ql.Settings.instance().enforceTodaysHistoricFixings = False
+
+    cal = on_index.fixingCalendar()
+
+    # -------- Spot start (T+1 Mexico) with tenor preservation --------
+    spot_start = on_index.valueDate(calculation_date)
+    start_shifted = (start_date <= calculation_date)
+    eff_start = start_date if not start_shifted else spot_start
+
+    if start_shifted:
+        # shift end by the same calendar-day offset
+        try:
+            day_offset = int(eff_start - start_date)
+        except Exception:
+            day_offset = eff_start.serialNumber() - start_date.serialNumber()
+        eff_end = cal.advance(maturity_date, int(day_offset), ql.Days)
+    else:
+        eff_end = maturity_date
+
+    if eff_end <= eff_start:
+        eff_end = cal.advance(eff_start, fixed_leg_tenor)
+
+    fixed_sched = ql.Schedule(
+        eff_start, eff_end, fixed_leg_tenor, cal,
+        fixed_leg_convention, fixed_leg_convention,
+        ql.DateGeneration.Forward, False
+    )
+
+    ois = ql.OvernightIndexedSwap(
+        ql.OvernightIndexedSwap.Payer,
+        notional,
+        fixed_sched,
+        fixed_rate,
+        fixed_leg_daycount,
+        on_index
+    )
+    ois.setPricingEngine(ql.DiscountingSwapEngine(curve))
+    return ois
+

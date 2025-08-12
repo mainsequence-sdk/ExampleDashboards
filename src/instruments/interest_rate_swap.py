@@ -7,8 +7,8 @@ from pydantic import BaseModel, Field, PrivateAttr
 from src.data_interface import APIDataNode
 from src.pricing_models.swap_pricer import (price_vanilla_swap, get_swap_cashflows,
                                             build_tiie_zero_curve_from_valmer,
-                                            price_vanilla_swap_with_curve,
-make_tiie_28d_index
+                                            price_vanilla_swap_with_curve,make_ftiie_index,
+make_tiie_28d_index,price_ftiie_ois_with_curve
 
                                             )
 from src.utils import to_ql_date
@@ -116,29 +116,24 @@ class TIIESwap(InterestRateSwap):
         ql_val = to_ql_date(self.valuation_date)
         ql.Settings.instance().evaluationDate = ql_val
 
-        # 1) Valmer TIIE zero curve
+        # Use your existing curve builder for now; replace with an FTIIE curve if available
         curve = build_tiie_zero_curve_from_valmer(ql_val)
 
-        # 2) Use provided index or build TIIE-28D
-        ibor = self.float_leg_ibor_index or make_tiie_28d_index(curve)
+        # Overnight FTIIE index (no USD fallback)
+        on_index = make_ftiie_index(curve)
 
-        # 3) Past fixings: per your rule, use earliest node’s zero
-        nodes = APIDataNode.get_historical_data("tiie_zero_valmer", {"MXN": {}})["curve_nodes"]
-        earliest_zero = float(nodes[0]["zero"])
 
-        # 4) Build & price
-        self._swap = price_vanilla_swap_with_curve(
+
+        # Price a fixed-vs-FTIIE OIS (fixed leg still 28D, ACT/360, ModFollowing)
+        self._swap = price_ftiie_ois_with_curve(
             calculation_date=ql_val,
             notional=self.notional,
             start_date=to_ql_date(self.start_date),
             maturity_date=to_ql_date(self.maturity_date),
             fixed_rate=self.fixed_rate,
-            fixed_leg_tenor=self.fixed_leg_tenor,
+            fixed_leg_tenor=self.fixed_leg_tenor,  # now accepted
             fixed_leg_convention=self.fixed_leg_convention,
             fixed_leg_daycount=self.fixed_leg_daycount,
-            float_leg_tenor=self.float_leg_tenor,
-            float_leg_spread=self.float_leg_spread,
-            ibor_index=ibor,
+            on_index=on_index,
             curve=curve,
-            past_fixing_rate=earliest_zero,  # fill all past fixings with earliest node
         )

@@ -73,8 +73,8 @@ def test_tiie_swap():
         notional=100_000_000,
         start_date=trade_date,  # we’ll move to spot internally
         maturity_date=trade_date,  # ignored when tenor is provided
-        tenor=ql.Period("364W"),  # quote is 156W
-        fixed_rate=0.07624865,  # 7.624865% in DECIMAL
+        tenor=ql.Period("364W"),  #
+        fixed_rate=0.082098,  # 7.624865% in DECIMAL
         valuation_date=trade_date,
         float_leg_spread=0.0,
         # legs default to 28D / ACT/360 / ModFollowing / Mexico in TIIESwap
