@@ -3,6 +3,7 @@ import datetime
 import QuantLib as ql
 from src.instruments.european_option import EuropeanOption
 from src.instruments.interest_rate_swap import InterestRateSwap
+from src.instruments.fixed_rate_bond import FixedRateBond
 
 
 def main():

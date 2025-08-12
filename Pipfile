@@ -6,6 +6,10 @@ name = "pypi"
 [packages]
 quantlib-python = "*"
 numpy = "*"
+pytest = "*"
+matplotlib = "*"
+pydantic = "*"
+pandas = "*"
 
 [dev-packages]
 

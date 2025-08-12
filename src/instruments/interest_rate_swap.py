@@ -1,60 +1,67 @@
 import datetime
+from typing import Optional, List, Dict, Any
+
 import QuantLib as ql
-from src.instruments.base_instrument import DerivativeInstrument
-from src.pricing_models.swap_pricer import price_vanilla_swap, get_swap_cashflows
+from pydantic import BaseModel, Field, PrivateAttr
+
+from src.pricing_models.swap_pricer import (price_vanilla_swap, get_swap_cashflows,
+                                            build_tiie_zero_curve_from_valmer,
+                                            price_vanilla_swap_with_curve,
+
+                                            )
 from src.utils import to_ql_date
-from typing import List, Dict, Any
 
 
-class InterestRateSwap(DerivativeInstrument):
-    """
-    Represents a standard vanilla Interest Rate Swap (IRS).
-    """
+class InterestRateSwap(BaseModel):
+    """Plain-vanilla fixed-for-floating interest rate swap."""
 
-    def __init__(self, notional: float, start_date: datetime.date, maturity_date: datetime.date,
-                 fixed_rate: float, fixed_leg_tenor: ql.Period, fixed_leg_convention: object,
-                 fixed_leg_daycount: ql.DayCounter, float_leg_tenor: ql.Period,
-                 float_leg_spread: float, float_leg_ibor_index: ql.IborIndex,
-                 valuation_date: datetime.date):
-        """
-        Initializes the Interest Rate Swap.
+    notional: float = Field(
+        ..., description="Contract notional (currency units)."
+    )
+    start_date: datetime.date = Field(
+        ..., description="Effective date when the swap begins accruing."
+    )
+    maturity_date: datetime.date = Field(
+        ..., description="Termination date of the swap."
+    )
+    fixed_rate: float = Field(
+        ..., description="Annual fixed rate on the fixed leg (decimal, e.g., 0.055)."
+    )
 
-        Args:
-            notional (float): The notional amount of the swap.
-            start_date (datetime.date): The effective date of the swap.
-            maturity_date (datetime.date): The termination date of the swap.
-            fixed_rate (float): The fixed rate paid by the fixed leg.
-            fixed_leg_tenor (ql.Period): The frequency of payments for the fixed leg.
-            fixed_leg_convention (object): Business day convention for the fixed leg.
-            fixed_leg_daycount (ql.DayCounter): Day count convention for the fixed leg.
-            float_leg_tenor (ql.Period): The frequency of payments for the floating leg.
-            float_leg_spread (float): The spread over the floating rate index.
-            float_leg_ibor_index (ql.IborIndex): The floating rate index (e.g., SOFR, Euribor).
-            valuation_date (datetime.date): The date for which the instrument is being valued.
-        """
-        self.notional = notional
-        self.start_date = start_date
-        self.maturity_date = maturity_date
-        self.fixed_rate = fixed_rate
-        self.fixed_leg_tenor = fixed_leg_tenor
-        self.fixed_leg_convention = fixed_leg_convention
-        self.fixed_leg_daycount = fixed_leg_daycount
-        self.float_leg_tenor = float_leg_tenor
-        self.float_leg_spread = float_leg_spread
-        self.float_leg_ibor_index = float_leg_ibor_index
-        self.valuation_date = valuation_date
-        self._swap = None  # To hold the QuantLib instrument
+    fixed_leg_tenor: ql.Period = Field(
+        ..., description="Fixed-leg coupon period, e.g., ql.Period('6M')."
+    )
+    fixed_leg_convention: int = Field(
+        ..., description="Business-day convention for fixed leg (QuantLib enum int, e.g., ql.Unadjusted)."
+    )
+    fixed_leg_daycount: ql.DayCounter = Field(
+        ..., description="Day-count basis for fixed leg, e.g., ql.Thirty360(ql.Thirty360.USA)."
+    )
 
-    def _setup_pricer(self):
-        """
-        Private helper to create the QuantLib swap object if it doesn't exist.
-        """
+    float_leg_tenor: ql.Period = Field(
+        ..., description="Floating-leg coupon period, e.g., ql.Period('3M')."
+    )
+    float_leg_spread: float = Field(
+        ..., description="Spread (decimal) added to the floating index."
+    )
+    float_leg_ibor_index: ql.IborIndex = Field(
+        ..., description="Floating index object (e.g., ql.USDLibor(ql.Period('3M'), curve))."
+    )
+
+    valuation_date: datetime.date = Field(
+        ..., description="Valuation date (sets QuantLib evaluation date)."
+    )
+
+    model_config = {"arbitrary_types_allowed": True}
+
+    _swap: Optional[ql.VanillaSwap] = PrivateAttr(default=None)
+
+    def _setup_pricer(self) -> None:
         if self._swap is None:
-            ql_valuation_date = to_ql_date(self.valuation_date)
-            ql.Settings.instance().evaluationDate = ql_valuation_date
-
+            ql_val = to_ql_date(self.valuation_date)
+            ql.Settings.instance().evaluationDate = ql_val
             self._swap = price_vanilla_swap(
-                calculation_date=ql_valuation_date,
+                calculation_date=ql_val,
                 notional=self.notional,
                 start_date=to_ql_date(self.start_date),
                 maturity_date=to_ql_date(self.maturity_date),
@@ -68,24 +75,76 @@ class InterestRateSwap(DerivativeInstrument):
             )
 
     def price(self) -> float:
-        """
-        Prices the Interest Rate Swap.
-        """
-        print(f"Pricing Interest Rate Swap as of {self.valuation_date}")
-        print(f"Notional: {self.notional:,.2f}, Fixed Rate: {self.fixed_rate:.2%}")
-        print(f"Start: {self.start_date}, Maturity: {self.maturity_date}")
-        print("--------------------------------------------------")
-
         self._setup_pricer()
-        npv = self._swap.NPV()
-
-        print(f"Successfully priced swap. NPV = {npv:,.2f}")
-        return npv
+        return float(self._swap.NPV())
 
     def get_cashflows(self) -> Dict[str, List[Dict[str, Any]]]:
-        """
-        Retrieves the projected cashflows for both legs of the swap.
-        """
-        print("\nAnalyzing Swap Cashflows...")
         self._setup_pricer()
         return get_swap_cashflows(self._swap)
+
+
+class TIIESwap(InterestRateSwap):
+    """
+    Mexican peso fixed-for-floating TIIE(28D) swap.
+    Inherits the IR swap model and only changes:
+      - leg defaults (28D, ACT/360),
+      - pricing hookup (uses Valmer TIIE zero curve).
+    """
+
+    # Override some defaults for MXN/TIIE
+    fixed_leg_tenor: ql.Period = Field(
+        default=ql.Period("28D"),
+        description="Fixed-leg coupon period (default: 28D)."
+    )
+    fixed_leg_daycount: ql.DayCounter = Field(
+        default=ql.Actual360(),
+        description="Fixed-leg day-count basis (default: ACT/360)."
+    )
+    float_leg_tenor: ql.Period = Field(
+        default=ql.Period("28D"),
+        description="Floating-leg coupon period (TIIE 28D)."
+    )
+    # Allow omitting the index; we’ll create TIIE(28D) from the Valmer curve if missing.
+    float_leg_ibor_index: Optional[ql.IborIndex] = Field(
+        default=None,
+        description="Floating index. If omitted, uses ql.TIIE(28D) linked to the Valmer zero curve."
+    )
+
+    model_config = {"arbitrary_types_allowed": True}
+    _swap: Optional[ql.VanillaSwap] = PrivateAttr(default=None)
+
+    def _setup_pricer(self) -> None:
+        if self._swap is not None:
+            return
+
+        ql_val = to_ql_date(self.valuation_date)
+        ql.Settings.instance().evaluationDate = ql_val
+
+        # 1) Build MXN TIIE zero curve (Valmer)
+        curve = build_tiie_zero_curve_from_valmer(ql_val)
+
+        # 2) Create/validate the TIIE index
+        if self.float_leg_ibor_index is not None:
+            ibor = self.float_leg_ibor_index
+        else:
+            if hasattr(ql, "TIIE"):
+                ibor = ql.TIIE(ql.Period("28D"), curve)
+            else:
+                # Pragmatic fallback if ql.TIIE isn't available in your wheel:
+                ibor = ql.USDLibor(ql.Period("1M"), curve)
+
+        # 3) Price using the provided curve (no USD bootstrapping)
+        self._swap = price_vanilla_swap_with_curve(
+            calculation_date=ql_val,
+            notional=self.notional,
+            start_date=to_ql_date(self.start_date),
+            maturity_date=to_ql_date(self.maturity_date),
+            fixed_rate=self.fixed_rate,
+            fixed_leg_tenor=self.fixed_leg_tenor,
+            fixed_leg_convention=self.fixed_leg_convention,
+            fixed_leg_daycount=self.fixed_leg_daycount,
+            float_leg_tenor=self.float_leg_tenor,
+            float_leg_spread=self.float_leg_spread,
+            ibor_index=ibor,
+            curve=curve,  # <- key: use the Valmer zero curve
+        )

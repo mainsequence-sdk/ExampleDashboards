@@ -1,166 +1,125 @@
-# QuantLibDev Development Guidelines
+# Junie Development Guidelines: QuantLibDev
 
-## Build/Configuration Instructions
+These guidelines will help you extend the `QuantLibDev` repository by adding new financial instruments and pricing models.
 
-### Environment Setup
-This project uses **pipenv** for dependency management. The project requires Python 3.10+ (note: the Pipfile incorrectly specifies Python 3.1, which should be updated to a modern version).
+---
 
-#### Initial Setup
-```bash
-# Install pipenv if not already installed
-pip install pipenv
+## 1. Project Overview & Architecture
 
-# Install project dependencies
-pipenv install
+The project is structured to separate financial **instruments**, their **pricing models**, and the **data interface**. A key principle is the use of **Pydantic** for instrument definitions to ensure data validation and clear schemas.
 
-# Activate the virtual environment
-pipenv shell
-```
+- **`src/instruments`**: This is where you define the financial products themselves. Each instrument is a **Pydantic `BaseModel`**, which provides data validation and a clear structure. These models also contain the methods for pricing.
+- **`src/pricing_models`**: This contains the logic for valuing the instruments. For example, `black_scholes.py` is used for pricing European options, and `swap_pricer.py` is used for interest rate swaps.
+- **`src/data_interface.py`**: This acts as a mock API to fetch the necessary market data for pricing, such as spot prices, volatility, or interest rates.
+- **`main.py`**: This is the application's entry point, which parses command-line arguments to price a specified derivative.
 
-#### Key Dependencies
-- **QuantLib-Python**: Core quantitative finance library for pricing and risk calculations
-- **NumPy**: Numerical computing support
+---
 
-### Project Structure
-```
-src/
-├── instruments/           # Financial instrument definitions
-│   ├── base_instrument.py    # Abstract base class
-│   ├── european_option.py    # European option implementation
-│   └── interest_rate_swap.py # Interest rate swap implementation
-├── pricing_models/        # Pricing engines and models
-│   ├── black_scholes.py      # Black-Scholes model
-│   └── swap_pricer.py        # Swap pricing utilities
-├── data_interface.py      # Mock data API (replace with real data source)
-└── utils.py              # Date conversion utilities
-```
+## 2. How to Add a New Asset Instrument
 
-### Running the Application
-The main entry point supports command-line pricing of derivatives:
+Here’s the step-by-step process to define a new financial instrument, using a **Fixed Rate Bond** as an example.
 
-```bash
-# European Option Example
-python main.py --instrument european_option --underlying "AAPL" --strike 150 --maturity "2026-12-31" --option_type call
+### Step 1: Create the Instrument File
 
-# Interest Rate Swap Example
-python main.py --instrument interest_rate_swap --notional 10000000 --start 2025-07-23 --maturity 2030-07-23 --fixed_rate 0.055 --float_spread 0.001
+1.  Navigate to the `src/instruments/` directory.
+2.  Create a new Python file for your instrument (e.g., `fixed_rate_bond.py`).
 
-# Swap with Cashflow Analysis
-python main.py --instrument interest_rate_swap --notional 10000000 --start 2025-07-23 --maturity 2030-07-23 --fixed_rate 0.055 --valuation_date 2026-01-15 --analyze_cashflows
-```
+### Step 2: Define the Instrument Class using Pydantic
 
-## Testing Information
+1.  Import necessary libraries: `datetime`, `ql` (QuantLib), and from `pydantic` import `BaseModel`, `Field`, and `PrivateAttr`.
+2.  Import the corresponding pricing model you will create in the next section.
+3.  Define a new class that inherits from **`pydantic.BaseModel`**.
+4.  Define the instrument's attributes using standard type hints. Use **`Field(..., description="...")`** to provide helpful documentation for each attribute.
+5.  Use **`PrivateAttr`** for any runtime objects (like the QuantLib instrument object) that should not be part of the model's schema.
+6.  Add a `Config` inner class with `arbitrary_types_allowed = True` to permit QuantLib objects.
 
-### Test Framework
-The project uses Python's built-in `unittest` framework for testing.
-
-### Running Tests
-```bash
-# Run all tests
-python -m unittest discover -s . -p "test_*.py"
-
-# Run a specific test file
-python test_example.py
-
-# Run with verbose output
-python -m unittest -v test_example.py
-```
-
-### Test Structure
-Tests are organized by instrument type:
-- `TestEuropeanOption`: Tests for option pricing and Greeks calculation
-- `TestInterestRateSwap`: Tests for swap pricing and cashflow analysis
-
-### Adding New Tests
-1. Create test files following the pattern `test_*.py`
-2. Import required modules and instrument classes
-3. Use `unittest.TestCase` as the base class
-4. For swap tests, include `setUp()` method to clear QuantLib index histories:
-   ```python
-   def setUp(self):
-       """Clear any existing fixings before each test."""
-       ql.IndexManager.instance().clearHistories()
-   ```
-
-### Test Example
 ```python
-import unittest
+# src/instruments/fixed_rate_bond.py
 import datetime
-from src.instruments.european_option import EuropeanOption
+import QuantLib as ql
+from typing import Optional
+from pydantic import BaseModel, Field, PrivateAttr
+from src.pricing_models.bond_pricer import create_fixed_rate_bond
 
-class TestNewInstrument(unittest.TestCase):
-    def test_pricing(self):
-        instrument = EuropeanOption(
-            underlying="TEST",
-            strike=100.0,
-            maturity=datetime.date(2026, 12, 31),
-            option_type="call"
-        )
-        price = instrument.price()
-        self.assertIsInstance(price, float)
-        self.assertGreater(price, 0)
+class FixedRateBond(BaseModel):
+    """Fixed-rate bond (Pydantic model)."""
+
+    face_value: float = Field(..., description="The principal amount of the bond.")
+    coupon_rate: float = Field(..., description="The annual coupon rate as a decimal (e.g., 0.05 for 5%).")
+    issue_date: datetime.date = Field(..., description="The date the bond was issued.")
+    maturity_date: datetime.date = Field(..., description="The date the bond matures.")
+    valuation_date: datetime.date = Field(
+        default_factory=datetime.date.today,
+        description="The date for which the bond is being valued."
+    )
+
+    # Private runtime attributes for QuantLib objects
+    _bond: Optional[ql.FixedRateBond] = PrivateAttr(default=None)
+
+    class Config:
+        # Allow complex types like QuantLib objects
+        arbitrary_types_allowed = True
+
+    # ... Pricing methods will be defined here ...
 ```
 
-## Additional Development Information
+### Step 3: Implement the Pricing and Analytics Methods
 
-### Code Architecture
+1.  **`_setup_pricer`**: Create a private helper method on the model to set up the QuantLib object. This method should call the pricer function you'll create (e.g., `create_fixed_rate_bond`).
+2.  **`price()`**: Implement the pricing method. This should call `_setup_pricer()` and then use the private QuantLib object (e.g., `self._bond`) to calculate and return the Net Present Value (NPV).
+3.  **`analytics()`** (Optional): Add other methods to return additional metrics, such as clean/dirty price or accrued interest.
 
-#### Design Patterns
-- **Strategy Pattern**: Different pricing models (Black-Scholes, swap pricer) implement specific pricing strategies
-- **Template Method**: Base instrument class defines common interface, concrete classes implement specific behavior
-- **Facade Pattern**: Main.py provides simplified interface to complex pricing subsystems
+---
 
-#### Key Abstractions
-- `DerivativeInstrument`: Base class for all financial instruments
-- `APITimeSeries`: Data interface abstraction (currently mock, should be replaced with real data source)
-- Pricing models are separated from instrument definitions for modularity
+## 3. How to Add a New Pricing Model
 
-### QuantLib Integration Notes
+Here's how to create a new pricer for the **Fixed Rate Bond** instrument.
 
-#### Date Handling
-- Use `src.utils.to_ql_date()` and `to_py_date()` for consistent date conversion
-- Always set `ql.Settings.instance().evaluationDate` before pricing
-- QuantLib uses its own Date class which differs from Python datetime
+### Step 1: Create the Pricer File
 
-#### Index Management
-- **Critical**: Clear index histories between tests using `ql.IndexManager.instance().clearHistories()`
-- QuantLib doesn't allow duplicate fixings for the same date
-- Historical fixings are automatically fetched and added during swap pricing
+1.  Navigate to the `src/pricing_models/` directory.
+2.  Create a new Python file for your pricer (e.g., `bond_pricer.py`).
 
-#### Yield Curve Construction
-- The project uses piecewise log-cubic discount curve bootstrapping
-- Market data includes both deposit rates (short-term) and swap rates (long-term)
-- Curves are built from mock data but follow realistic market conventions
+### Step 2: Implement the Data-Fetching and Curve-Building Logic
 
-### Data Interface
-The current `APITimeSeries` class provides mock data. In production:
-- Replace with real market data provider (Bloomberg, Refinitiv, etc.)
-- Implement proper error handling and data validation
-- Add caching mechanisms for performance
-- Consider async data fetching for multiple instruments
+1.  Import the necessary libraries, especially `APITimeSeries` from the data interface.
+2.  Create a function to build the necessary market data structures. For a bond, this would be a yield curve. This function should call `APITimeSeries.get_historical_data` to fetch the required rates.
 
-### Performance Considerations
-- QuantLib objects are computationally expensive to create
-- Cache yield curves and market data when possible
-- Use QuantLib's built-in optimization features (e.g., `enableExtrapolation()`)
-- Consider parallel processing for portfolio-level calculations
+```python
+# src/pricing_models/bond_pricer.py
+import QuantLib as ql
+from src.data_interface import APITimeSeries
 
-### Common Pitfalls
-1. **Date Mismatches**: Always ensure consistent date handling between Python and QuantLib
-2. **Index Fixings**: Clear histories between tests to avoid duplicate fixing errors
-3. **Calendar Alignment**: Ensure business day calendars match the instrument's market
-4. **Memory Management**: QuantLib objects can consume significant memory; clean up when possible
+def build_bond_discount_curve(calculation_date: ql.Date) -> ql.YieldTermStructureHandle:
+    """
+    Builds a discount curve from mock zero rates.
+    """
+    print("Building discount curve from 'discount_bond_curve'...")
+    data = APITimeSeries.get_historical_data("discount_bond_curve", {"USD_discount_curve": {}})
+    # ... logic to build and return a QuantLib yield curve ...
+```
 
-### Debugging Tips
-- Enable QuantLib's detailed error messages for troubleshooting
-- Use the mock data API's debug output to trace data flow
-- Verify yield curve construction by checking discount factors at key tenors
-- For swap pricing issues, examine individual cashflows using `get_cashflows()`
+### Step 3: Create the Main Pricing Function
 
-### Future Enhancements
-- Add support for exotic derivatives (barriers, Asian options, etc.)
-- Implement Monte Carlo pricing engines
-- Add portfolio-level risk calculations (VaR, expected shortfall)
-- Create web API interface for remote pricing
-- Add real-time market data integration
-- Implement proper logging and monitoring
+1.  Create the main function that the instrument class will call (e.g., `create_fixed_rate_bond`).
+2.  This function should:
+    - Set the QuantLib evaluation date.
+    - Call the curve-building function you created in the previous step.
+    - Construct the QuantLib `FixedRateBond` object.
+    - Create a pricing engine (e.g., `ql.DiscountingBondEngine`) and attach it to the bond object.
+    - Return the fully configured QuantLib bond object.
+
+---
+
+## 4. Final Integration
+
+To make your new instrument available through the command line:
+
+1.  **Open `main.py`**.
+2.  **Import** your new instrument class (e.g., `from src.instruments.fixed_rate_bond import FixedRateBond`).
+3.  Add a new `elif` block in the `main` function to handle the new instrument.
+4.  Inside this block:
+    - Add command-line argument parsing for the new instrument's parameters.
+    - Instantiate your new instrument model.
+    - Call its `price()` and any other analytics methods.
+    - Print the results in a formatted table.

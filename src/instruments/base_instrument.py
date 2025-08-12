@@ -1,22 +1,10 @@
-from abc import ABC, abstractmethod
+from typing import Protocol, runtime_checkable
 
-
-class DerivativeInstrument(ABC):
+@runtime_checkable
+class Instrument(Protocol):
     """
-    Abstract base class for all derivative instruments.
-
-    This class defines the common interface that all instruments must implement,
-    ensuring that they can be priced in a consistent manner.
+    Any object with a .price() -> float is considered a derivative instrument.
+    Using a Protocol avoids metaclass conflicts with Pydantic BaseModel.
     """
-
-    @abstractmethod
-    def price(self) -> float:
-        """
-        Calculates the price (Net Present Value) of the instrument.
-
-        This method must be implemented by all concrete instrument subclasses.
-        It should encapsulate the entire pricing process, including data fetching,
-        model setup, and calculation.
-        """
-        pass
+    def price(self) -> float: ...
 

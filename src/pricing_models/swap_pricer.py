@@ -2,8 +2,8 @@ import QuantLib as ql
 from src.data_interface import APITimeSeries
 from src.utils import to_py_date,to_ql_date
 import datetime
-from typing import List, Dict, Any
-
+from typing import List, Dict, Any, Optional
+import matplotlib.pyplot as plt
 
 def add_historical_fixings(calculation_date: ql.Date, ibor_index: ql.IborIndex):
     """
@@ -41,6 +41,23 @@ def add_historical_fixings(calculation_date: ql.Date, ibor_index: ql.IborIndex):
     ibor_index.addFixings(fixing_dates, fixing_rates)
     print(f"Successfully added {len(fixing_dates)} fixings for {ibor_index.name()}.")
 
+def build_tiie_zero_curve_from_valmer(calculation_date: ql.Date) -> ql.YieldTermStructureHandle:
+    market = APITimeSeries.get_historical_data("tiie_zero_valmer", {"MXN": {}})
+    nodes = market["curve_nodes"]
+
+    cal = ql.Mexico() if hasattr(ql, "Mexico") else ql.TARGET()
+    dc  = ql.Actual360()  # TIIE convention
+    dates, zeros = [], []
+    for n in nodes:
+        d = cal.advance(calculation_date, int(n["days_to_maturity"]), ql.Days)
+        dates.append(d)
+        zeros.append(float(n["zero"]))
+
+    zc = ql.ZeroCurve(dates, zeros, dc, cal)
+    zc.enableExtrapolation()
+    return ql.YieldTermStructureHandle(zc)
+
+
 
 def build_yield_curve(calculation_date: ql.Date) -> ql.YieldTermStructureHandle:
     """
@@ -48,7 +65,7 @@ def build_yield_curve(calculation_date: ql.Date) -> ql.YieldTermStructureHandle:
     """
     print("Building bootstrapped yield curve from market nodes...")
 
-    rate_data = APITimeSeries.get_historical_data("interest_rates", {"USD_rates": {}})
+    rate_data = APITimeSeries.get_historical_data("interest_rate_swaps", {"USD_rates": {}})
     curve_nodes = rate_data['curve_nodes']
 
     calendar = ql.TARGET()
@@ -83,6 +100,77 @@ def build_yield_curve(calculation_date: ql.Date) -> ql.YieldTermStructureHandle:
 
     print("Yield curve built successfully.")
     return ql.YieldTermStructureHandle(yield_curve)
+
+def price_vanilla_swap_with_curve(
+    calculation_date: ql.Date,
+    notional: float,
+    start_date: ql.Date,
+    maturity_date: ql.Date,
+    fixed_rate: float,
+    fixed_leg_tenor: ql.Period,
+    fixed_leg_convention: int,
+    fixed_leg_daycount: ql.DayCounter,
+    float_leg_tenor: ql.Period,
+    float_leg_spread: float,
+    ibor_index: ql.IborIndex,
+    curve: ql.YieldTermStructureHandle,
+        past_fixing_rate: float | None = None,
+
+) -> ql.VanillaSwap:
+    ql.Settings.instance().evaluationDate = calculation_date
+
+    # Link the pricing index to the provided curve
+    pricing_ibor_index = ibor_index.clone(curve)
+
+    # Build schedules with the index's calendar/conventions
+    calendar = pricing_ibor_index.fixingCalendar()
+
+    fixed_schedule = ql.Schedule(
+        start_date, maturity_date, fixed_leg_tenor, calendar,
+        fixed_leg_convention, fixed_leg_convention,
+        ql.DateGeneration.Forward, False
+    )
+    float_schedule = ql.Schedule(
+        start_date, maturity_date, float_leg_tenor, calendar,
+        pricing_ibor_index.businessDayConvention(), pricing_ibor_index.businessDayConvention(),
+        ql.DateGeneration.Forward, False
+    )
+
+    swap = ql.VanillaSwap(
+        ql.VanillaSwap.Payer,
+        notional,
+        fixed_schedule,
+        fixed_rate,
+        fixed_leg_daycount,
+        float_schedule,
+        pricing_ibor_index,
+        float_leg_spread,
+        pricing_ibor_index.dayCounter()
+    )
+
+    # --- Fill missing past fixings with the earliest-node zero rate ---
+    if past_fixing_rate is None:
+        # "Earliest node" = zero at the index's tenor from calc date
+        # (e.g., 28D for TIIE, 1M for 1M Libor). No t<0 calls, all forward.
+        dc = pricing_ibor_index.dayCounter()
+        try:
+            probe_date = calendar.advance(calculation_date, pricing_ibor_index.tenor())
+        except Exception:
+            probe_date = calendar.advance(calculation_date, 28, ql.Days)
+        past_fixing_rate = curve.zeroRate(probe_date, dc, ql.Continuous, ql.Annual).rate()
+
+    for cf in swap.leg(1):
+        cup = ql.as_floating_rate_coupon(cf)
+        fix = cup.fixingDate()
+        if fix <= calculation_date:
+            try:
+                _ = pricing_ibor_index.fixing(fix)
+            except RuntimeError:
+                pricing_ibor_index.addFixing(fix, past_fixing_rate)
+
+    # engine
+    swap.setPricingEngine(ql.DiscountingSwapEngine(curve))
+    return swap
 
 
 def price_vanilla_swap(calculation_date: ql.Date, notional: float, start_date: ql.Date,
@@ -162,3 +250,54 @@ def get_swap_cashflows(swap: ql.VanillaSwap) -> Dict[str, List[Dict[str, Any]]]:
             })
 
     return cashflows
+
+def plot_swap_zero_curve(
+    calculation_date: ql.Date | datetime.date,
+    max_years: int = 30,
+    step_months: int = 3,
+    compounding = ql.Continuous,   # QuantLib enums are ints; don't type-hint them
+    frequency  = ql.Annual,
+    show: bool = False,
+    ax: Optional[plt.Axes] = None,
+) -> tuple[list[float], list[float]]:
+    """
+    Plot the zero-coupon (spot) curve implied by the swap-bootstrapped curve.
+
+    Returns:
+        (tenors_in_years, zero_rates) with zero_rates in decimals (e.g., 0.045).
+    """
+    # normalize date
+    ql_calc = to_ql_date(calculation_date) if isinstance(calculation_date, datetime.date) else calculation_date
+    ql.Settings.instance().evaluationDate = ql_calc
+
+    # build curve from the mocked swap/deposit nodes
+    ts_handle = build_yield_curve(ql_calc)
+
+    calendar = ql.TARGET()
+    day_count = ql.Actual365Fixed()
+
+    years: list[float] = []
+    zeros: list[float] = []
+
+    months = 1
+    while months <= max_years * 12:
+        d = calendar.advance(ql_calc, ql.Period(months, ql.Months))
+        T = day_count.yearFraction(ql_calc, d)
+        z = ts_handle.zeroRate(d, day_count, compounding, frequency).rate()
+        years.append(T)
+        zeros.append(z)
+        months += step_months
+
+    # plot
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(7, 4))
+    ax.plot(years, [z * 100 for z in zeros])
+    ax.set_xlabel("Maturity (years)")
+    ax.set_ylabel("Zero rate (%)")
+    ax.set_title("Zero-Coupon Yield Curve (Swaps)")
+    ax.grid(True, linestyle="--", alpha=0.4)
+
+    if show:
+        plt.show()
+
+    return years, zeros

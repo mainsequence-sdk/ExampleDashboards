@@ -112,26 +112,62 @@ class APITimeSeries:
         elif table_name == "discount_bond_curve":
             # Zero rates for discounting bond cashflows (simple upward-sloping curve).
             # Tenors are parsed by QuantLib (e.g., "6M", "5Y").
-            asof = datetime.date(2025, 8, 11)
-
             return {
-                "asof": asof,
-                "zeros": [
-                    {"tenor": "1M", "yield": 0.0370},
-                    {"tenor": "3M", "yield": 0.0385},
-                    {"tenor": "6M", "yield": 0.0395},
-                    {"tenor": "9M", "yield": 0.0405},
-                    {"tenor": "1Y", "yield": 0.0410},
-                ],
-                "fixed_rate_bonds": [
-                    # clean/dirty per 100 face; semiannual coupons by default
-                    {"tenor": "2Y", "coupon": 0.0425, "clean_price": 99.20, "dirty_price": 99.45, "frequency": "6M"},
-                    {"tenor": "3Y", "coupon": 0.0440, "clean_price": 98.85, "dirty_price": 99.10, "frequency": "6M"},
-                    {"tenor": "5Y", "coupon": 0.0475, "clean_price": 98.10, "dirty_price": 98.40, "frequency": "6M"},
-                    {"tenor": "7Y", "coupon": 0.0490, "clean_price": 97.25, "dirty_price": 97.60, "frequency": "6M"},
-                    {"tenor": "10Y", "coupon": 0.0500, "clean_price": 96.80, "dirty_price": 97.20, "frequency": "6M"},
+                "curve_nodes": [
+                    # --- Zero-coupon section (<= 1Y) ---
+                    {"type": "zcb", "days_to_maturity": 30, "yield": 0.0370},
+                    {"type": "zcb", "days_to_maturity": 90, "yield": 0.0385},
+                    {"type": "zcb", "days_to_maturity": 180, "yield": 0.0395},
+                    {"type": "zcb", "days_to_maturity": 270, "yield": 0.0405},
+                    {"type": "zcb", "days_to_maturity": 360, "yield": 0.0410},
+
+                    # --- Coupon bond section (>= 2Y) ---
+                    {"type": "bond", "days_to_maturity": 730, "coupon": 0.0425, "clean_price": 99.20,
+                     "dirty_price": 99.45, "frequency": "6M", "day_count": "30/360"},
+                    {"type": "bond", "days_to_maturity": 1095, "coupon": 0.0440, "clean_price": 98.85,
+                     "dirty_price": 99.10, "frequency": "6M", "day_count": "30/360"},
+                    {"type": "bond", "days_to_maturity": 1825, "coupon": 0.0475, "clean_price": 98.10,
+                     "dirty_price": 98.40, "frequency": "6M", "day_count": "30/360"},
+                    {"type": "bond", "days_to_maturity": 2555, "coupon": 0.0490, "clean_price": 97.25,
+                     "dirty_price": 97.60, "frequency": "6M", "day_count": "30/360"},
+                    {"type": "bond", "days_to_maturity": 3650, "coupon": 0.0500, "clean_price": 96.80,
+                     "dirty_price": 97.20, "frequency": "6M", "day_count": "30/360"},
                 ]
             }
+        elif table_name == "tiie_zero_valmer":
+            """
+            Return a pre-built MXN TIIE zero curve parsed from a CSV.
+
+            Expected CSV columns (case-insensitive; flexible):
+              - Either 'maturity_date' (YYYY-MM-DD) OR 'days_to_maturity' OR a 'tenor' like '28D','3M','2Y'
+              - One rate column among: ['zero','rate','yield','tiie'] as a decimal (e.g., 0.095 for 9.5%)
+                (if the file holds percents like 9.50, we'll auto-convert to 0.095)
+            """
+            import os
+            import pandas as pd
+            from pathlib import Path
+
+            # You can override this path in your env; default points to the uploaded file
+            DEFAULT_TIIE_CSV = Path(__file__).resolve().parents[2] / "data" / "MEXDERSWAP_IRSTIIEPR.csv"
+            csv_path = os.getenv("TIIE_ZERO_CSV") or str(DEFAULT_TIIE_CSV)
+            if not os.path.exists(csv_path):
+                raise FileNotFoundError(f"TIIE zero curve CSV not found at: {csv_path}")
+
+            names = ["id", "curve_name", "maturity_date", "days_to_maturity", "zero_rate"]
+            # STRICT: comma-separated, headerless, exactly these six columns
+            df = pd.read_csv(csv_path, header=None, names=names, sep=",", engine="c", dtype=str)
+            # pick a rate column
+
+            df["days_to_maturity"]=df["days_to_maturity"].astype(int)
+            df["zero_rate"] = df["zero_rate"].astype(float)
+
+            nodes = [
+                {"days_to_maturity": d, "zero": z}
+                for d, z in zip(df["days_to_maturity"], df["zero_rate"])
+                if d > 0
+            ]
+            return {"curve_nodes": nodes}
+
         else:
             raise ValueError(f"Table '{table_name}' not found in mock data API.")
 
