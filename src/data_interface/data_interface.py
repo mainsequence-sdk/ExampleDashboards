@@ -16,7 +16,7 @@ class DateInfo(TypedDict, total=False):
 UniqueIdentifierRangeMap = Dict[str, DateInfo]
 
 
-class APITimeSeries:
+class APIDataNode:
     """
     A mock class to simulate fetching financial time series data from an API.
 
@@ -159,7 +159,7 @@ class APITimeSeries:
             # pick a rate column
 
             df["days_to_maturity"]=df["days_to_maturity"].astype(int)
-            df["zero_rate"] = df["zero_rate"].astype(float)
+            df["zero_rate"] = df["zero_rate"].astype(float)/100
 
             nodes = [
                 {"days_to_maturity": d, "zero": z}

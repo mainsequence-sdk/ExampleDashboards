@@ -1,5 +1,5 @@
 import QuantLib as ql
-from src.data_interface import APITimeSeries
+from src.data_interface import APIDataNode
 from src.utils import to_py_date,to_ql_date
 import datetime
 from typing import List, Dict, Any, Optional
@@ -24,7 +24,7 @@ def add_historical_fixings(calculation_date: ql.Date, ibor_index: ql.IborIndex):
     start_date = end_date - datetime.timedelta(days=365)  # Look back one year
 
     # Fetch the fixings from the new API method
-    historical_fixings = APITimeSeries.get_historical_fixings(
+    historical_fixings = APIDataNode.get_historical_fixings(
         index_name=ibor_index.name(),
         start_date=start_date,
         end_date=end_date
@@ -42,7 +42,7 @@ def add_historical_fixings(calculation_date: ql.Date, ibor_index: ql.IborIndex):
     print(f"Successfully added {len(fixing_dates)} fixings for {ibor_index.name()}.")
 
 def build_tiie_zero_curve_from_valmer(calculation_date: ql.Date) -> ql.YieldTermStructureHandle:
-    market = APITimeSeries.get_historical_data("tiie_zero_valmer", {"MXN": {}})
+    market = APIDataNode.get_historical_data("tiie_zero_valmer", {"MXN": {}})
     nodes = market["curve_nodes"]
 
     cal = ql.Mexico() if hasattr(ql, "Mexico") else ql.TARGET()
@@ -57,7 +57,52 @@ def build_tiie_zero_curve_from_valmer(calculation_date: ql.Date) -> ql.YieldTerm
     zc.enableExtrapolation()
     return ql.YieldTermStructureHandle(zc)
 
+def make_tiie_28d_index(
+    curve: ql.YieldTermStructureHandle,
+    settlement_days: int = 1,
+) -> ql.IborIndex:
+    """
+    Construct a minimal TIIE-28D IborIndex linked to `curve`.
 
+    Conventions used (standard for MXN TIIE 28D):
+      - Tenor: 28 days
+      - Settlement: T+1
+      - Calendar: Mexico (fallback TARGET if not available in your wheel)
+      - Business day convention: ModifiedFollowing
+      - End-of-month: False
+      - Day count: Actual/360
+      - Currency: MXN (fallback USD if MXN class not available; does not affect math)
+
+    Parameters
+    ----------
+    curve : ql.YieldTermStructureHandle
+        Forwarding (and, in your setup, discounting) curve to link to the index.
+    settlement_days : int
+        Fixing settlement lag in business days (default 1).
+
+    Returns
+    -------
+    ql.IborIndex
+        An index named "TIIE-28D" ready to use in swap construction.
+    """
+    # Calendar & currency (graceful fallbacks if your wheel lacks Mexico/MXN)
+    cal = ql.Mexico() if hasattr(ql, "Mexico") else ql.TARGET()
+    try:
+        ccy = ql.MXNCurrency()
+    except Exception:
+        ccy = ql.USDCurrency()  # label only; does not affect rates/discounting
+
+    return ql.IborIndex(
+        "TIIE-28D",
+        ql.Period("28D"),
+        settlement_days,  # T+1
+        ccy,
+        cal,
+        ql.ModifiedFollowing,  # BDC
+        False,  # EOM
+        ql.Actual360(),  # ACT/360
+        curve
+    )
 
 def build_yield_curve(calculation_date: ql.Date) -> ql.YieldTermStructureHandle:
     """
@@ -65,7 +110,7 @@ def build_yield_curve(calculation_date: ql.Date) -> ql.YieldTermStructureHandle:
     """
     print("Building bootstrapped yield curve from market nodes...")
 
-    rate_data = APITimeSeries.get_historical_data("interest_rate_swaps", {"USD_rates": {}})
+    rate_data = APIDataNode.get_historical_data("interest_rate_swaps", {"USD_rates": {}})
     curve_nodes = rate_data['curve_nodes']
 
     calendar = ql.TARGET()
@@ -114,28 +159,38 @@ def price_vanilla_swap_with_curve(
     float_leg_spread: float,
     ibor_index: ql.IborIndex,
     curve: ql.YieldTermStructureHandle,
-        past_fixing_rate: float | None = None,
-
+    past_fixing_rate: float | None = None,
 ) -> ql.VanillaSwap:
     ql.Settings.instance().evaluationDate = calculation_date
 
     # Link the pricing index to the provided curve
     pricing_ibor_index = ibor_index.clone(curve)
-
-    # Build schedules with the index's calendar/conventions
     calendar = pricing_ibor_index.fixingCalendar()
 
+    # --------- EFFECTIVE DATES (spot start safeguard) ----------
+    # If user passed trade date (T) or anything <= eval, move to spot (T+settlement)
+    spot_start = pricing_ibor_index.valueDate(calculation_date)
+    eff_start = start_date if start_date > calculation_date else spot_start
+
+    # Ensure termination is strictly after effective start
+    eff_end = maturity_date
+    if eff_end <= eff_start:
+        # Minimum length: one floating period (e.g., 28D for TIIE)
+        eff_end = calendar.advance(eff_start, float_leg_tenor)
+
+    # --------- Schedules ----------
     fixed_schedule = ql.Schedule(
-        start_date, maturity_date, fixed_leg_tenor, calendar,
+        eff_start, eff_end, fixed_leg_tenor, calendar,
         fixed_leg_convention, fixed_leg_convention,
         ql.DateGeneration.Forward, False
     )
     float_schedule = ql.Schedule(
-        start_date, maturity_date, float_leg_tenor, calendar,
+        eff_start, eff_end, float_leg_tenor, calendar,
         pricing_ibor_index.businessDayConvention(), pricing_ibor_index.businessDayConvention(),
         ql.DateGeneration.Forward, False
     )
 
+    # --------- Instrument ----------
     swap = ql.VanillaSwap(
         ql.VanillaSwap.Payer,
         notional,
@@ -148,15 +203,11 @@ def price_vanilla_swap_with_curve(
         pricing_ibor_index.dayCounter()
     )
 
-    # --- Fill missing past fixings with the earliest-node zero rate ---
+    # --------- Past fixings fill (earliest node) ----------
     if past_fixing_rate is None:
-        # "Earliest node" = zero at the index's tenor from calc date
-        # (e.g., 28D for TIIE, 1M for 1M Libor). No t<0 calls, all forward.
+        # derive a simple forward from the curve at +tenor (no t<0 queries)
         dc = pricing_ibor_index.dayCounter()
-        try:
-            probe_date = calendar.advance(calculation_date, pricing_ibor_index.tenor())
-        except Exception:
-            probe_date = calendar.advance(calculation_date, 28, ql.Days)
+        probe_date = calendar.advance(calculation_date, pricing_ibor_index.tenor())
         past_fixing_rate = curve.zeroRate(probe_date, dc, ql.Continuous, ql.Annual).rate()
 
     for cf in swap.leg(1):
@@ -168,7 +219,6 @@ def price_vanilla_swap_with_curve(
             except RuntimeError:
                 pricing_ibor_index.addFixing(fix, past_fixing_rate)
 
-    # engine
     swap.setPricingEngine(ql.DiscountingSwapEngine(curve))
     return swap
 

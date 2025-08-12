@@ -66,19 +66,37 @@ def test_interest_rate_swap_direct():
 
 def test_tiie_swap():
     from src.instruments.interest_rate_swap import TIIESwap
-
+    from src.utils import to_ql_date
+    # 156W tenor (3y) from start date, and correct par fixed rate 07381%
+    trade_date = dt.date(2025, 8, 12)  # valuation date (T)
     swap = TIIESwap(
-        notional=50_000_000,
-        start_date=dt.date(2025, 8, 12),
-        maturity_date=dt.date(2028, 8, 12),
-        fixed_rate=0.10,  # 10% fixed
-        fixed_leg_convention=ql.Unadjusted,
-        valuation_date=dt.date(2025, 8, 12),
+        notional=100_000_000,
+        start_date=trade_date,  # we’ll move to spot internally
+        maturity_date=trade_date,  # ignored when tenor is provided
+        tenor=ql.Period("364W"),  # quote is 156W
+        fixed_rate=0.07624865,  # 7.624865% in DECIMAL
+        valuation_date=trade_date,
         float_leg_spread=0.0,
-        # float_leg_ibor_index=None  -> will auto-use TIIE(28D) on Valmer curve
+        # legs default to 28D / ACT/360 / ModFollowing / Mexico in TIIESwap
     )
 
-    print("NPV:", swap.price())
+    ql.Settings.instance().evaluationDate = to_ql_date(swap.valuation_date)
+
+    npv = swap.price()
+    fair = swap._swap.fairRate()
+    print("NPV:", npv, "Fair:", fair)
+
+    npv = swap.price()
+    fixed_pv = swap._swap.fixedLegNPV()
+    float_pv = swap._swap.floatingLegNPV()
+
+    print("NPV:", npv)
+    print("Fixed PV:", fixed_pv)
+    print("Float PV:", float_pv)
+
+    # Par checks: fixed leg PV ~ notional; total NPV ~ 0
+    assert abs(fixed_pv - swap.notional) / swap.notional < 5e-3
+    assert abs(npv) < 1e-2 * swap.notional
 
 def test_fixed_rate_bond_direct():
     import QuantLib as ql

@@ -4,9 +4,11 @@ from typing import Optional, List, Dict, Any
 import QuantLib as ql
 from pydantic import BaseModel, Field, PrivateAttr
 
+from src.data_interface import APIDataNode
 from src.pricing_models.swap_pricer import (price_vanilla_swap, get_swap_cashflows,
                                             build_tiie_zero_curve_from_valmer,
                                             price_vanilla_swap_with_curve,
+make_tiie_28d_index
 
                                             )
 from src.utils import to_ql_date
@@ -90,24 +92,18 @@ class TIIESwap(InterestRateSwap):
       - leg defaults (28D, ACT/360),
       - pricing hookup (uses Valmer TIIE zero curve).
     """
-
+    tenor: Optional[ql.Period] = Field(
+        default=None,
+        description="If set (e.g. ql.Period('156W')), maturity is start + tenor using spot start (T+1)."
+    )
     # Override some defaults for MXN/TIIE
-    fixed_leg_tenor: ql.Period = Field(
-        default=ql.Period("28D"),
-        description="Fixed-leg coupon period (default: 28D)."
-    )
-    fixed_leg_daycount: ql.DayCounter = Field(
-        default=ql.Actual360(),
-        description="Fixed-leg day-count basis (default: ACT/360)."
-    )
-    float_leg_tenor: ql.Period = Field(
-        default=ql.Period("28D"),
-        description="Floating-leg coupon period (TIIE 28D)."
-    )
-    # Allow omitting the index; we’ll create TIIE(28D) from the Valmer curve if missing.
+    fixed_leg_tenor: ql.Period = Field(default=ql.Period("28D"), description="Fixed leg frequency (28D).")
+    fixed_leg_convention: int = Field(default=ql.ModifiedFollowing, description="BDC for fixed leg (ModFollowing).")
+    fixed_leg_daycount: ql.DayCounter = Field(default=ql.Actual360(), description="Fixed leg day count (ACT/360).")
+    float_leg_tenor: ql.Period = Field(default=ql.Period("28D"), description="Floating leg frequency (28D).")
     float_leg_ibor_index: Optional[ql.IborIndex] = Field(
         default=None,
-        description="Floating index. If omitted, uses ql.TIIE(28D) linked to the Valmer zero curve."
+        description="If None, a TIIE-28D index linked to the Valmer zero curve will be created."
     )
 
     model_config = {"arbitrary_types_allowed": True}
@@ -120,20 +116,17 @@ class TIIESwap(InterestRateSwap):
         ql_val = to_ql_date(self.valuation_date)
         ql.Settings.instance().evaluationDate = ql_val
 
-        # 1) Build MXN TIIE zero curve (Valmer)
+        # 1) Valmer TIIE zero curve
         curve = build_tiie_zero_curve_from_valmer(ql_val)
 
-        # 2) Create/validate the TIIE index
-        if self.float_leg_ibor_index is not None:
-            ibor = self.float_leg_ibor_index
-        else:
-            if hasattr(ql, "TIIE"):
-                ibor = ql.TIIE(ql.Period("28D"), curve)
-            else:
-                # Pragmatic fallback if ql.TIIE isn't available in your wheel:
-                ibor = ql.USDLibor(ql.Period("1M"), curve)
+        # 2) Use provided index or build TIIE-28D
+        ibor = self.float_leg_ibor_index or make_tiie_28d_index(curve)
 
-        # 3) Price using the provided curve (no USD bootstrapping)
+        # 3) Past fixings: per your rule, use earliest node’s zero
+        nodes = APIDataNode.get_historical_data("tiie_zero_valmer", {"MXN": {}})["curve_nodes"]
+        earliest_zero = float(nodes[0]["zero"])
+
+        # 4) Build & price
         self._swap = price_vanilla_swap_with_curve(
             calculation_date=ql_val,
             notional=self.notional,
@@ -146,5 +139,6 @@ class TIIESwap(InterestRateSwap):
             float_leg_tenor=self.float_leg_tenor,
             float_leg_spread=self.float_leg_spread,
             ibor_index=ibor,
-            curve=curve,  # <- key: use the Valmer zero curve
+            curve=curve,
+            past_fixing_rate=earliest_zero,  # fill all past fixings with earliest node
         )

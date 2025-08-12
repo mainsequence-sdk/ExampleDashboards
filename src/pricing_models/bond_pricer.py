@@ -1,7 +1,7 @@
 # src/pricing_models/bond_pricer.py
 import QuantLib as ql
 from typing import List, Dict, Any, Optional
-from src.data_interface import APITimeSeries
+from src.data_interface import APIDataNode
 from src.utils import to_ql_date
 import datetime
 import matplotlib.pyplot as plt
@@ -27,7 +27,7 @@ def build_discount_curve_from_bonds(calculation_date: ql.Date) -> ql.YieldTermSt
       - type == "bond": fixed-rate bond quoted by clean price -> FixedRateBondHelper.
     """
     print("Building discount curve from 'discount_bond_curve' (days_to_maturity)...")
-    market: Dict[str, Any] = APITimeSeries.get_historical_data("discount_bond_curve", {"USD_bond_market": {}})
+    market: Dict[str, Any] = APIDataNode.get_historical_data("discount_bond_curve", {"USD_bond_market": {}})
     curve_nodes: List[Dict[str, Any]] = market["curve_nodes"]
 
     calendar = ql.TARGET()
