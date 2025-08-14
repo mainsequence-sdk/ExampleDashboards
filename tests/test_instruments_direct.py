@@ -18,6 +18,8 @@ except Exception:
 from src.instruments.european_option import EuropeanOption
 from src.instruments.interest_rate_swap import InterestRateSwap
 from src.instruments.fixed_rate_bond import FixedRateBond
+from src.instruments.vanilla_fx_option import VanillaFXOption
+from src.instruments.knockout_fx_option import KnockOutFXOption
 
 
 from src.pricing_models.bond_pricer import plot_zero_coupon_curve
@@ -154,10 +156,181 @@ def test_plot_zero_curve_from_swaps():
     assert len(years) > 4 and len(zeros) == len(years)
     plt.show()
 
+
+def test_fx_option():
+    """Test the Vanilla FX Option implementation."""
+    print("Testing Vanilla FX Option implementation...")
+
+    try:
+        # Create a EUR/USD call option
+        fx_option = VanillaFXOption(
+            currency_pair="EURUSD",
+            strike=1.10,
+            maturity=datetime.date(2026, 6, 15),
+            option_type="call",
+            notional=1000000,
+            calculation_date=datetime.date.today()
+        )
+
+        print(f"Created FX Option: {fx_option.currency_pair} {fx_option.option_type}")
+        print(f"Strike: {fx_option.strike}")
+        print(f"Notional: {fx_option.notional:,.0f}")
+        print(f"Maturity: {fx_option.maturity}")
+
+        # Get market info
+        market_info = fx_option.get_market_info()
+        print(f"\nMarket Data:")
+        print(f"Spot FX Rate: {market_info['spot_fx_rate']:.4f}")
+        print(f"Volatility: {market_info['volatility']:.2%}")
+        print(f"Domestic Rate ({market_info['domestic_currency']}): {market_info['domestic_rate']:.2%}")
+        print(f"Foreign Rate ({market_info['foreign_currency']}): {market_info['foreign_rate']:.2%}")
+
+        # Price the option
+        price = fx_option.price()
+        print(f"\nOption Price: {price:,.2f} USD")
+
+        # Get Greeks
+        greeks = fx_option.get_greeks()
+        print(f"\nGreeks:")
+        print(f"Delta: {greeks['delta']:,.4f}")
+        print(f"Gamma: {greeks['gamma']:,.6f}")
+        print(f"Vega: {greeks['vega']:,.4f}")
+        print(f"Theta: {greeks['theta']:,.4f}")
+        print(f"Rho (Domestic): {greeks['rho_domestic']:,.4f}")
+
+        print("\n✓ FX Option test completed successfully!")
+        return True
+
+    except Exception as e:
+        print(f"\n✗ FX Option test failed with error: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
+def test_knockout_fx_option():
+    """Test the Knock-out FX Option implementation."""
+    print("Testing Knock-out FX Option implementation...")
+
+    try:
+        # Test 1: Up-and-out EUR/USD call option
+        print("\n--- Test 1: Up-and-out EUR/USD Call ---")
+        knockout_option_up = KnockOutFXOption(
+            currency_pair="EURUSD",
+            strike=1.10,
+            barrier=1.15,  # Barrier above current spot
+            maturity=dt.date(2026, 6, 15),
+            option_type="call",
+            barrier_type="up_and_out",
+            notional=1000000,
+            rebate=1000.0,
+            calculation_date=dt.date.today()
+        )
+
+        print(f"Created Up-and-Out FX Option: {knockout_option_up.currency_pair} {knockout_option_up.option_type}")
+        print(f"Strike: {knockout_option_up.strike}")
+        print(f"Barrier: {knockout_option_up.barrier} ({knockout_option_up.barrier_type})")
+        print(f"Notional: {knockout_option_up.notional:,.0f}")
+        print(f"Rebate: {knockout_option_up.rebate:,.0f}")
+
+        # Get market info
+        market_info = knockout_option_up.get_market_info()
+        print(f"\nMarket Data:")
+        print(f"Spot FX Rate: {market_info['spot_fx_rate']:.4f}")
+        print(f"Volatility: {market_info['volatility']:.2%}")
+        print(f"Domestic Rate: {market_info['domestic_rate']:.2%}")
+        print(f"Foreign Rate: {market_info['foreign_rate']:.2%}")
+
+        # Get barrier info
+        barrier_info = knockout_option_up.get_barrier_info()
+        print(f"\nBarrier Information:")
+        print(f"Barrier Status: {barrier_info['barrier_status']}")
+        print(f"Distance to Barrier: {barrier_info['distance_to_barrier_pct']:.2f}%")
+
+        # Price the option
+        price = knockout_option_up.price()
+        print(f"\nOption Price: {price:,.2f} USD")
+        assert _is_finite_number(price), "Price should be a finite number"
+        assert price >= 0, "Knock-out option price should be non-negative"
+
+        # Get Greeks
+        greeks = knockout_option_up.get_greeks()
+        print(f"\nGreeks:")
+        print(f"Delta: {greeks['delta']:,.4f}")
+        print(f"Gamma: {greeks['gamma']:,.6f}")
+        print(f"Vega: {greeks['vega']:,.4f}")
+        print(f"Theta: {greeks['theta']:,.4f}")
+        print(f"Rho (Domestic): {greeks['rho_domestic']:,.4f}")
+
+        # Validate Greeks are finite
+        for greek_name, greek_value in greeks.items():
+            assert _is_finite_number(greek_value), f"{greek_name} should be a finite number"
+
+        # Test 2: Down-and-out EUR/USD put option
+        print("\n--- Test 2: Down-and-out EUR/USD Put ---")
+        knockout_option_down = KnockOutFXOption(
+            currency_pair="EURUSD",
+            strike=1.08,
+            barrier=1.05,  # Barrier below current spot
+            maturity=dt.date(2026, 6, 15),
+            option_type="put",
+            barrier_type="down_and_out",
+            notional=500000,
+            rebate=500.0,
+            calculation_date=dt.date.today()
+        )
+
+        print(f"Created Down-and-Out FX Option: {knockout_option_down.currency_pair} {knockout_option_down.option_type}")
+        print(f"Strike: {knockout_option_down.strike}")
+        print(f"Barrier: {knockout_option_down.barrier} ({knockout_option_down.barrier_type})")
+
+        # Price the option
+        price_down = knockout_option_down.price()
+        print(f"Option Price: {price_down:,.2f} USD")
+        assert _is_finite_number(price_down), "Price should be a finite number"
+        assert price_down >= 0, "Knock-out option price should be non-negative"
+
+        # Get barrier info
+        barrier_info_down = knockout_option_down.get_barrier_info()
+        print(f"Barrier Status: {barrier_info_down['barrier_status']}")
+        print(f"Distance to Barrier: {barrier_info_down['distance_to_barrier_pct']:.2f}%")
+
+        # Test 3: Compare with vanilla option (knock-out should be cheaper)
+        print("\n--- Test 3: Comparison with Vanilla Option ---")
+        vanilla_option = VanillaFXOption(
+            currency_pair="EURUSD",
+            strike=1.10,
+            maturity=dt.date(2026, 6, 15),
+            option_type="call",
+            notional=1000000,
+            calculation_date=dt.date.today()
+        )
+
+        vanilla_price = vanilla_option.price()
+        knockout_price = knockout_option_up.price()
+
+        print(f"Vanilla Option Price: {vanilla_price:,.2f} USD")
+        print(f"Knock-out Option Price: {knockout_price:,.2f} USD")
+        print(f"Price Difference: {vanilla_price - knockout_price:,.2f} USD")
+
+        # Knock-out option should be cheaper than vanilla (barrier reduces value)
+        assert knockout_price <= vanilla_price, "Knock-out option should be cheaper than vanilla option"
+
+        print("\n✓ Knock-out FX Option tests completed successfully!")
+        return True
+
+    except Exception as e:
+        print(f"\n✗ Knock-out FX Option test failed with error: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
 # test_european_option_direct()
 # test_fixed_rate_bond_direct()
 # test_interest_rate_swap_direct()
 
 # test_plot_zero_curve_from_swaps()
 # test_plot_zero_curve_from_bonds()
-test_tiie_swap()
+test_knockout_fx_option()
+# test_tiie_swap()

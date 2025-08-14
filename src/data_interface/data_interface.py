@@ -134,6 +134,49 @@ class APIDataNode:
                      "dirty_price": 97.20, "frequency": "6M", "day_count": "30/360"},
                 ]
             }
+        elif table_name == "fx_options":
+            # Mock FX options market data
+            currency_pair = list(asset_range_map.keys())[0]
+
+            # Mock data for common currency pairs
+            fx_mock_data = {
+                "EURUSD": {
+                    "spot_fx_rate": 1.0850,
+                    "volatility": 0.12,
+                    "domestic_rate": 0.045,  # USD rate
+                    "foreign_rate": 0.035    # EUR rate
+                },
+                "GBPUSD": {
+                    "spot_fx_rate": 1.2650,
+                    "volatility": 0.15,
+                    "domestic_rate": 0.045,  # USD rate
+                    "foreign_rate": 0.040    # GBP rate
+                },
+                "USDJPY": {
+                    "spot_fx_rate": 148.50,
+                    "volatility": 0.11,
+                    "domestic_rate": 0.005,  # JPY rate
+                    "foreign_rate": 0.045    # USD rate
+                },
+                "USDCHF": {
+                    "spot_fx_rate": 0.8950,
+                    "volatility": 0.13,
+                    "domestic_rate": 0.015,  # CHF rate
+                    "foreign_rate": 0.045    # USD rate
+                }
+            }
+
+            if currency_pair in fx_mock_data:
+                return fx_mock_data[currency_pair]
+            else:
+                # Default mock data for unknown pairs
+                return {
+                    "spot_fx_rate": 1.0000,
+                    "volatility": 0.15,
+                    "domestic_rate": 0.040,
+                    "foreign_rate": 0.040
+                }
+
         elif table_name == "tiie_zero_valmer":
             """
             Return a pre-built MXN TIIE zero curve parsed from a CSV.
@@ -170,4 +213,3 @@ class APIDataNode:
 
         else:
             raise ValueError(f"Table '{table_name}' not found in mock data API.")
-

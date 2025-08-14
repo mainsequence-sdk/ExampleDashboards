@@ -122,8 +122,6 @@ class TIIESwap(InterestRateSwap):
         # Overnight FTIIE index (no USD fallback)
         on_index = make_ftiie_index(curve)
 
-
-
         # Price a fixed-vs-FTIIE OIS (fixed leg still 28D, ACT/360, ModFollowing)
         self._swap = price_ftiie_ois_with_curve(
             calculation_date=ql_val,
