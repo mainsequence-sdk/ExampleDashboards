@@ -332,5 +332,5 @@ def test_knockout_fx_option():
 
 # test_plot_zero_curve_from_swaps()
 # test_plot_zero_curve_from_bonds()
-test_knockout_fx_option()
+# test_knockout_fx_option()
 # test_tiie_swap()

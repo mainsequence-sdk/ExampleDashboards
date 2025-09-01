@@ -6,24 +6,11 @@ from typing import List, Dict, Any, Optional
 import matplotlib.pyplot as plt
 
 def add_historical_fixings(calculation_date: ql.Date, ibor_index: ql.IborIndex):
-    """
-    Fetches and adds historical fixings to an IborIndex.
-
-    This function now calls the data interface to get a history of fixings
-    and loads them into the index.
-
-    Args:
-        calculation_date (ql.Date): The date of the valuation.
-        ibor_index (ql.IborIndex): The index to add fixings to.
-    """
     print("Fetching and adding historical fixings...")
 
-    # Define the historical period for which to fetch fixings.
-    # A real implementation might look back further or have more complex logic.
     end_date = to_py_date(calculation_date) - datetime.timedelta(days=1)
-    start_date = end_date - datetime.timedelta(days=365)  # Look back one year
+    start_date = end_date - datetime.timedelta(days=365)
 
-    # Fetch the fixings from the new API method
     historical_fixings = APIDataNode.get_historical_fixings(
         index_name=ibor_index.name(),
         start_date=start_date,
@@ -34,12 +21,23 @@ def add_historical_fixings(calculation_date: ql.Date, ibor_index: ql.IborIndex):
         print("No historical fixings found in the given date range.")
         return
 
-    # Use the more efficient addFixings (plural) method
-    fixing_dates = [to_ql_date(dt) for dt in historical_fixings.keys()]
-    fixing_rates = list(historical_fixings.values())
+    # --- NEW: keep only valid fixing dates for THIS index (Mexico calendar) and strictly in the past
+    valid_qld: list[ql.Date] = []
+    valid_rates: list[float] = []
 
-    ibor_index.addFixings(fixing_dates, fixing_rates)
-    print(f"Successfully added {len(fixing_dates)} fixings for {ibor_index.name()}.")
+    for dt_py, rate in sorted(historical_fixings.items()):
+        qld = to_ql_date(dt_py)
+        if qld < calculation_date and ibor_index.isValidFixingDate(qld):
+            valid_qld.append(qld)
+            valid_rates.append(rate)
+
+    if not valid_qld:
+        print("No valid fixing dates for the index calendar; skipping addFixings.")
+        return
+
+    # --- NEW: allow overwriting if some dates already have a fixing
+    ibor_index.addFixings(valid_qld, valid_rates, True)
+    print(f"Successfully added {len(valid_qld)} fixings for {ibor_index.name()}.")
 
 def build_tiie_zero_curve_from_valmer(calculation_date: ql.Date) -> ql.YieldTermStructureHandle:
     market = APIDataNode.get_historical_data("tiie_zero_valmer", {"MXN": {}})

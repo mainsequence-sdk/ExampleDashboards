@@ -10,6 +10,7 @@ pytest = "*"
 matplotlib = "*"
 pydantic = "*"
 pandas = "*"
+plotly = "*"
 
 [dev-packages]
 

@@ -46,6 +46,14 @@ class APIDataNode:
         elif 'SOFR' in index_name:
             calendar = ql.UnitedStates(ql.UnitedStates.SOFR)
             print("Using UnitedStates.SOFR calendar for SOFR.")
+        elif 'TIIE' in index_name or 'F-TIIE' in index_name:
+            # Mexico interbank conventions
+            try:
+                calendar = ql.Mexico()
+                print("Using Mexico calendar for TIIE.")
+            except Exception:
+                calendar = ql.TARGET()
+                print("Mexico calendar unavailable in this wheel; falling back to TARGET.")
 
         print("---------------------\n")
 
