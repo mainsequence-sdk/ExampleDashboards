@@ -12,7 +12,7 @@ import QuantLib as ql
 from src.data_interface import APIDataNode
 from src.pricing_models.swap_pricer import (
     add_historical_fixings, price_vanilla_swap_with_curve,
-    make_tiie_28d_index, build_tiie_zero_curve_from_valmer
+    make_tiie_28d_index, build_tiie_zero_curve_from_valmer,
 )
 
 # -------------------- existing conversions --------------------
@@ -139,16 +139,19 @@ def make_float_bond(curve: ql.YieldTermStructureHandle,
     cal = calendar_from_str(ins.get("calendar", "TARGET"))
     bdc = bdc_from_str(ins.get("bdc", "ModifiedFollowing"))
     dcc = dcc_from_str(ins.get("day_count", "ACT/360"))
-    tenor = ql.Period(ins.get("float_tenor", "3M"))
+    flt_tenor = ql.Period(ins.get("float_tenor", "3M"))
     spread = float(ins.get("spread", 0.0))
     notional = float(ins["notional"])
 
-    index = ql.USDLibor(tenor, curve)  # forecasting off provided curve
+    # Pick the right Ibor index from the instrument's "index" field (e.g., "MXN-TIIE-28D")
+    # Fallback keeps USD 3M if index isn't provided (e.g., your USD float bond example).
+    index_str = ins.get("index") or "USD-LIBOR-3M"
+    index = make_index(index_str, curve)
     add_historical_fixings(calc_date, index)  # fill past fixings via your helper
 
     start = calc_date
     end   = cal.advance(calc_date, ql.Period(ins.get("tenor", "5Y")))
-    sched = ql.Schedule(start, end, tenor, cal, bdc, bdc, ql.DateGeneration.Forward, False)
+    sched = ql.Schedule(start, end, flt_tenor, cal, bdc, bdc, ql.DateGeneration.Forward, False)
 
     bond  = ql.FloatingRateBond(int(ins.get("settlement_days", 2)), notional, sched,
                                 index, dcc, bdc, 1, [1.0], [spread], [], [], False, 100.0, start)
@@ -178,7 +181,7 @@ def make_swap(curve: ql.YieldTermStructureHandle,
         maybe = idx_str.split("-")[-1]
         if maybe.endswith(("M","Y")):
             idx_tenor = maybe
-    ibor = ql.USDLibor(ql.Period(idx_tenor), curve)
+    ibor = make_index(ins.get("index", "USD-LIBOR-3M"), curve)
 
     swap = price_vanilla_swap_with_curve(
         calculation_date=calc_date,
@@ -333,6 +336,8 @@ def price_all(base_curve: ql.YieldTermStructureHandle,
     return npv0, npv1, cf0, cf1, units
 
 
+
+
 # ---- Helpers for per-ID metadata ----
 def id_meta(positions: dict) -> dict[str, dict]:
     meta: dict[str, dict] = {}
@@ -483,7 +488,7 @@ def compute_repricing_gap(positions: dict,
 
 # ---- Duration gap & EVE (finite-difference duration using +1bp curve) ----
 def duration_gap_and_eve(positions: dict,
-                         base_nodes: List[dict],
+                         base_nodes_or_curve: ql.YieldTermStructureHandle | List[dict],
                          calc_date: ql.Date,
                          bump_bp: float = 1.0,
                          eve_bp: float = 200.0) -> dict:
@@ -542,7 +547,7 @@ def duration_gap_and_eve(positions: dict,
 
 # ---- NII 12m shock: sum projected cash amounts in horizon under +bp ----
 def nii_12m_shock(positions: dict,
-                  base_nodes: List[dict],
+                  base_nodes_or_curve: ql.YieldTermStructureHandle | List[dict],
                   calc_date: ql.Date,
                   shock_bp: float = 100.0,
                   horizon_days: int = 365) -> dict:
@@ -596,8 +601,11 @@ def _nodes_from_ts(ts: ql.YieldTermStructureHandle, calc_date: ql.Date,
                    tenors: list[str]) -> list[dict]:
     cal, dc = ql.TARGET(), ql.Actual365Fixed()
     out = []
+    ref = ts.referenceDate()
     for t in tenors:
         d = cal.advance(calc_date, ql.Period(t))
+        if d < ref:
+            d = ref
         try:
             r = ts.zeroRate(d, dc, ql.Continuous, ql.Annual).rate()
         except Exception as e:
@@ -613,10 +621,16 @@ def _bump_curve_ts(base_ts: ql.YieldTermStructureHandle, calc_date: ql.Date,
     tenor_bumps_bp = { (k or "").upper(): float(v) for k, v in (tenor_bumps_bp or {}).items() }
     cal, dc = ql.TARGET(), ql.Actual365Fixed()
 
-    # sample grid
-    dates = [cal.advance(calc_date, ql.Period(m, ql.Months))
-             for m in range(step_months, max_years*12 + 1, step_months)]
+    # sample grid — include short-end anchors so 28D/91D don't sit left of the first knot
+    short_anchors = [cal.advance(calc_date, ql.Period(p)) for p in ("28D", "1M", "2M")]
+
+    monthly = [cal.advance(calc_date, ql.Period(m, ql.Months))
+                for m in range(step_months, max_years * 12 + 1, step_months)]
+    dates = sorted(set(short_anchors + monthly))
+    # strictly increasing and unique
+
     z0 = [base_ts.zeroRate(d, dc, ql.Continuous, ql.Annual).rate() for d in dates]
+
 
     # build bump function (piecewise linear in years)
     def tenor_to_years(s: str) -> float:
@@ -638,7 +652,19 @@ def _bump_curve_ts(base_ts: ql.YieldTermStructureHandle, calc_date: ql.Date,
     par_spread = float(parallel_bp) / 10_000.0
 
     z_bumped = [max(z + par_spread + s, -0.20) for z, s in zip(z0, keyrate_spread)]  # guard
-    bumped = ql.ZeroCurve(dates, z_bumped, dc, cal)
+    # --- Anchor reference date at calc_date by PREPENDING calc_date to the grid ---
+    # Interpolate the key-rate spread at t=0 as well (use left endpoint if needed).
+    if tenor_bumps_bp:
+        k0 = float(np.interp(0.0, xs, ys, left=ys[0], right=ys[-1]))
+    else:
+        k0 = 0.0
+    z0_at_ref = base_ts.zeroRate(calc_date, dc, ql.Continuous, ql.Annual).rate()
+    z0_at_ref_bumped = max(z0_at_ref + par_spread + k0, -0.20)
+    dates2 = [calc_date] + dates
+    z_bumped2 = [z0_at_ref_bumped] + z_bumped
+    # Use the overload: ZeroCurve(dates, zeroRates, dayCounter[, calendar])
+    bumped = ql.ZeroCurve(dates2, z_bumped2, dc, cal)
+
     bumped.enableExtrapolation()
     return ql.YieldTermStructureHandle(bumped)
 

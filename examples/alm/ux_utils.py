@@ -7,7 +7,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import plotly.io as pio
 import QuantLib as ql
-from src.pricing_models.swap_pricer import make_tiie_28d_index  # add
+from src.pricing_models.swap_pricer import make_tiie_28d_index,price_vanilla_swap_with_curve
 
 
 # -------- Plot theme (consistent everywhere) --------
@@ -23,11 +23,12 @@ def register_theme(name: str = "ms_dark") -> None:
     layout.update({
         "font": {"family": "Inter, Segoe UI, Helvetica, Arial", "size": 13, "color": "#EAECEE"},
         "paper_bgcolor": "#0E1216",
-        "plot_bgcolor":  "#0E1216",
+        "plot_bgcolor": "#0E1216",
         "colorway": colorway,
         "separators": ",.",  # 1,234.56 style
         "hoverlabel": {"bgcolor": "#171C22", "bordercolor": "#2B2F36", "font": {"color": "#EAECEE"}},
-        "legend": {"bgcolor": "rgba(0,0,0,0)", "orientation": "h", "yanchor": "bottom", "y": 1.02, "xanchor": "right", "x": 1},
+        "legend": {"bgcolor": "rgba(0,0,0,0)", "orientation": "h", "yanchor": "bottom", "y": 1.02, "xanchor": "right",
+                   "x": 1},
         "margin": {"l": 60, "r": 30, "t": 60, "b": 50},
     })
 
@@ -42,14 +43,14 @@ def register_theme(name: str = "ms_dark") -> None:
         **base_axis,
         # Make range *controls* readable in dark mode
         "rangeslider": {
-            "visible": False,               # we will turn it on per-figure (bottom axis only)
+            "visible": False,  # we will turn it on per-figure (bottom axis only)
             "bgcolor": "#0B1016",
             "bordercolor": "#2B2F36",
             "borderwidth": 1,
-            "thickness": 0.12,              # fraction of axis domain
+            "thickness": 0.12,  # fraction of axis domain
         },
         "rangeselector": {
-            "bgcolor": "rgba(0,0,0,0)",     # transparent buttons background bar
+            "bgcolor": "rgba(0,0,0,0)",  # transparent buttons background bar
             "activecolor": "#2B2F36",
             "font": {"color": "#EAECEE", "size": 12},
             # put buttons *outside* the plot area of the top subplot
@@ -62,8 +63,11 @@ def register_theme(name: str = "ms_dark") -> None:
     pio.templates[name] = go.layout.Template(**tpl)
     pio.templates.default = name
 
+
 # Call it at import if you like:
 register_theme()
+
+
 # -------- Yield curve (zero) --------
 def plot_yield_curves(T0: np.ndarray, Z0: np.ndarray,
                       T1: np.ndarray, Z1: np.ndarray,
@@ -104,6 +108,7 @@ def plot_cashflows(base_cf: pd.DataFrame,
     """
     base_cf/bumped_cf must have ['ins_id','pay_date','amount'].
     """
+
     def scale(df: pd.DataFrame) -> pd.DataFrame:
         df = df.copy()
         df["units"] = df["ins_id"].map(units_by_id).fillna(1.0)
@@ -111,7 +116,8 @@ def plot_cashflows(base_cf: pd.DataFrame,
         return df
 
     g0 = scale(base_cf).groupby("pay_date", as_index=False)["amount"].sum().rename(columns={"amount": "amount_base"})
-    g1 = scale(bumped_cf).groupby("pay_date", as_index=False)["amount"].sum().rename(columns={"amount": "amount_bumped"})
+    g1 = scale(bumped_cf).groupby("pay_date", as_index=False)["amount"].sum().rename(
+        columns={"amount": "amount_bumped"})
     m = g0.merge(g1, on="pay_date", how="outer").fillna(0.0)
     m["amount_delta"] = m["amount_bumped"] - m["amount_base"]
 
@@ -168,11 +174,12 @@ def plot_cashflows(base_cf: pd.DataFrame,
 
 
 # -------- NPVs (portfolio or per instrument family) --------
-def plot_npvs(npv_base: dict[str, float], npv_bumped: dict[str, float], title: str = "NPV (Base vs Bumped)") -> go.Figure:
+def plot_npvs(npv_base: dict[str, float], npv_bumped: dict[str, float],
+              title: str = "NPV (Base vs Bumped)") -> go.Figure:
     keys = list(npv_base.keys())
     b0 = np.array([npv_base[k] for k in keys])
     b1 = np.array([npv_bumped[k] for k in keys])
-    d  = b1 - b0
+    d = b1 - b0
 
     fig = go.Figure()
     fig.add_bar(x=keys, y=b0, name="Base")
@@ -190,6 +197,7 @@ def _fmt_currency(x: float, symbol: str = "$", precision: int = 2) -> str:
         return f"{symbol}{x:,.{precision}f}"
     except Exception:
         return str(x)
+
 
 def table_from_df(df: pd.DataFrame,
                   title: str = "Summary",
@@ -249,10 +257,12 @@ def table_kpis(kv: dict, currency_symbol: str = "$") -> go.Figure:
     fig.update_layout(title="ALM KPIs", height=380)
     return fig
 
+
 # --- Liquidity ladder (inflow/outflow bars; net/cumulative lines) ---
-def plot_liquidity_ladder(df: pd.DataFrame, currency_symbol: str = "$", title: str = "Liquidity Ladder (next 12 months)") -> go.Figure:
+def plot_liquidity_ladder(df: pd.DataFrame, currency_symbol: str = "$",
+                          title: str = "Liquidity Ladder (next 12 months)") -> go.Figure:
     fig = go.Figure()
-    fig.add_bar(x=df["bucket"], y=df["inflow"],  name="Inflows",  marker_color="#58D68D",
+    fig.add_bar(x=df["bucket"], y=df["inflow"], name="Inflows", marker_color="#58D68D",
                 hovertemplate=f"%{{x|%b %Y}}<br>Inflows: {currency_symbol}%{{y:,.2f}}<extra></extra>")
     fig.add_bar(x=df["bucket"], y=-df["outflow"], name="Outflows", marker_color="#EC7063",
                 hovertemplate=f"%{{x|%b %Y}}<br>Outflows: {currency_symbol}%{{y:,.2f}}<extra></extra>")
@@ -273,9 +283,11 @@ def plot_repricing_gap(df: pd.DataFrame, currency_symbol: str = "$") -> go.Figur
                       yaxis_title=f"Exposure ({currency_symbol})", height=480)
     return fig
 
+
 # --- EVE bars for +/- shocks ---
 def plot_eve_bars(eve: dict, currency_symbol: str = "$") -> go.Figure:
-    keys = list(eve.keys()); vals = [eve[k] for k in keys]
+    keys = list(eve.keys());
+    vals = [eve[k] for k in keys]
     fig = go.Figure()
     fig.add_bar(x=keys, y=vals, marker_color=["#EC7063" if "+" in k else "#58D68D" for k in keys])
     fig.update_layout(title="ΔEVE (parallel shocks)", yaxis_title=f"ΔPV ({currency_symbol})", height=360)
@@ -287,11 +299,12 @@ def plot_eve_bars_compare(eve_base: dict, eve_bump: dict, currency_symbol: str =
     bvals = [eve_base[c] for c in cats]
     uvals = [eve_bump.get(c, np.nan) for c in cats]
     fig = go.Figure()
-    fig.add_bar(x=cats, y=bvals, name="Base",   marker_color="#5DADE2")
+    fig.add_bar(x=cats, y=bvals, name="Base", marker_color="#5DADE2")
     fig.add_bar(x=cats, y=uvals, name="Bumped", marker_color="#F5B041")
     fig.update_layout(barmode="group", title="ΔEVE (parallel shocks) — Base vs Bumped",
                       yaxis_title=f"ΔPV ({currency_symbol})", height=360)
     return fig
+
 
 # ---------- helpers ----------
 def _years_from_period(calc_date: ql.Date, per: ql.Period,
@@ -300,6 +313,7 @@ def _years_from_period(calc_date: ql.Date, per: ql.Period,
     """Exact year fraction from calc_date to calc_date+per."""
     d = cal.advance(calc_date, per)
     return dc.yearFraction(calc_date, d)
+
 
 def _nodes_to_points(nodes: list[dict], calc_date: ql.Date) -> tuple[np.ndarray, np.ndarray, list[str]]:
     cal, dc = ql.TARGET(), ql.Actual365Fixed()
@@ -313,55 +327,81 @@ def _nodes_to_points(nodes: list[dict], calc_date: ql.Date) -> tuple[np.ndarray,
         labels.append(f'{n["type"].upper()} {n["tenor"].upper()}')
     return np.array(xs), np.array(ys), labels
 
+
+def _tiie_spot_from(calc_date: ql.Date, ibor: ql.IborIndex) -> ql.Date:
+    cal = ibor.fixingCalendar()
+    fixing = cal.adjust(calc_date, ql.Following)
+    while not ibor.isValidFixingDate(fixing):
+        fixing = cal.advance(fixing, 1, ql.Days)
+    return ibor.valueDate(fixing)
+
+def _spot_from_index(calc_date: ql.Date, index: ql.IborIndex) -> ql.Date:
+    cal = index.fixingCalendar()
+    fixing = cal.adjust(calc_date, ql.Following)
+    while not index.isValidFixingDate(fixing):
+        fixing = cal.advance(fixing, 1, ql.Days)
+    return index.valueDate(fixing)
+
 def _par_yield_curve(ts: ql.YieldTermStructureHandle,
                      calc_date: ql.Date,
                      max_years: int = 12,
                      step_months: int = 3,
                      index_hint: str = "USD-LIBOR-3M") -> tuple[np.ndarray, np.ndarray]:
-    cal   = ql.TARGET()
-    dc    = ql.Actual365Fixed()
+    cal = ql.TARGET()
+    dc = ql.Actual365Fixed()
     # choose floating index for the synthetic par swap
     hint = (index_hint or "").upper()
     if "TIIE" in hint:
         ibor = make_tiie_28d_index(ts)
         float_step = ql.Period(28, ql.Days)
-        fixed_step = ql.Period(28, ql.Days)   # simple approximation for MXN fixed leg
-        fixed_dc   = ql.Actual360()
-        fixed_cnv  = ql.Unadjusted
+        fixed_step = ql.Period(28, ql.Days)
+        fixed_dc = ql.Actual360()
+        fixed_cnv  = ql.ModifiedFollowing
+        spot = _tiie_spot_from(calc_date, ibor)
     else:
         ibor = ql.USDLibor(ql.Period("3M"), ts)
         float_step = ql.Period("3M")
         fixed_step = ql.Period("1Y")
-        fixed_dc   = ql.Thirty360(ql.Thirty360.USA)
-        fixed_cnv  = ql.Unadjusted
+        fixed_dc = ql.Thirty360(ql.Thirty360.USA)
+        fixed_cnv = ql.Unadjusted
 
-    spot  = ibor.valueDate(calc_date)
+    # --- NEW: compute a VALID fixing date before asking for valueDate()
+    fix_cal = ibor.fixingCalendar()
+    fixing = fix_cal.adjust(calc_date, ql.Following)
+    while not ibor.isValidFixingDate(fixing):
+        fixing = fix_cal.advance(fixing, 1, ql.Days)
+
+    spot = _spot_from_index(calc_date, ibor)
+
+
     T, Y = [], []
     m = step_months
     while m <= max_years * 12:
         end_from_today = cal.advance(calc_date, ql.Period(m, ql.Months))
         T.append(dc.yearFraction(calc_date, end_from_today))
-        if m <= 12:
-            df   = ts.discount(end_from_today)
-            tau  = dc.yearFraction(calc_date, end_from_today)
-            r_mm = (1.0 / max(df, 1e-12) - 1.0) / max(tau, 1e-12)
-            Y.append(r_mm)
-        else:
-            end = cal.advance(spot, ql.Period(m, ql.Months))
-            fixed_sched = ql.Schedule(spot, end, fixed_step, cal, fixed_cnv, fixed_cnv,
-                                      ql.DateGeneration.Forward, False)
-            float_sched = ql.Schedule(spot, end, float_step, cal, ql.ModifiedFollowing, ql.ModifiedFollowing,
-                                      ql.DateGeneration.Forward, False)
-            swap = ql.VanillaSwap(
-                ql.VanillaSwap.Payer, 1.0,
-                fixed_sched, 0.0, fixed_dc,
-                float_sched, ibor, 0.0, ibor.dayCounter()
-            )
-            swap.setPricingEngine(ql.DiscountingSwapEngine(ts))
-            Y.append(swap.fairRate())
+
+        end = (ibor.fixingCalendar().advance(spot, ql.Period(m, ql.Months))
+                if "TIIE" in hint else cal.advance(spot, ql.Period(m, ql.Months)))
+
+        # **Use the same pricer and conventions as production code**
+        swap = price_vanilla_swap_with_curve(
+                        calculation_date = calc_date,
+                    notional = 1.0,
+                    start_date = spot,
+                    maturity_date = end,
+                    fixed_rate = 0.0,  # we will read fairRate()
+                    fixed_leg_tenor = fixed_step,
+                    fixed_leg_convention = fixed_cnv,
+                    fixed_leg_daycount = fixed_dc,
+                    float_leg_tenor = float_step,
+                    float_leg_spread = 0.0,
+                    ibor_index = ibor,
+                    curve = ts,
+                )
+        Y.append(swap.fairRate())
+
         m += step_months
     return np.array(T), np.array(Y)
-
 
 
 # ---------- NEW main plotting function ----------
@@ -372,13 +412,22 @@ def plot_par_yield_curve(base_ts: ql.YieldTermStructureHandle,
                          bumped_nodes: list[dict],
                          bump_tenors: dict[str, float] | None = None,
                          max_years: int = 12,
-                         step_months: int = 3) -> go.Figure:
+                         step_months: int = 3,
+                         index_hint: str = "USD-LIBOR-3M"
+                         ) -> go.Figure:
     T0, Y0 = _par_yield_curve(base_ts, calc_date, max_years, step_months, index_hint=index_hint)
     T1, Y1 = _par_yield_curve(bumped_ts, calc_date, max_years, step_months, index_hint=index_hint)
 
     # Node markers
-    xb, yb, lb_b = _nodes_to_points(base_nodes,   calc_date)
-    xB, yB, lb_B = _nodes_to_points(bumped_nodes, calc_date)
+
+
+    if "TIIE" in (index_hint or "").upper():
+        xb, yb, lb_b = _par_nodes_tiie(base_ts, calc_date, base_nodes)
+        xB, yB, lb_B = _par_nodes_tiie(bumped_ts, calc_date, bumped_nodes)
+    else:
+        xb, yb, lb_b = _nodes_to_points(base_nodes, calc_date)
+        xB, yB, lb_B = _nodes_to_points(bumped_nodes, calc_date)
+    # Node markers: for TIIE show **par** nodes (same pricer as the line). For others keep zero nodes.
 
     fig = go.Figure()
 
@@ -422,6 +471,43 @@ def plot_par_yield_curve(base_ts: ql.YieldTermStructureHandle,
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
     )
     return fig
+
+
+def _par_nodes_tiie(ts: ql.YieldTermStructureHandle,
+                    calc_date: ql.Date,
+                    nodes: list[dict]) -> tuple[np.ndarray, np.ndarray, list[str]]:
+    ibor = make_tiie_28d_index(ts)
+    calx = ibor.fixingCalendar()
+    spot = _tiie_spot_from(calc_date, ibor)
+
+    xs, ys, labels = [], [], []
+    for n in nodes:
+        tstr = (n.get("tenor") or "").upper()
+        if not tstr:
+            continue
+        per = ql.Period(tstr)
+        # x‑axis point (display years; Actual365 is fine for the axis)
+        x = ql.Actual365Fixed().yearFraction(calc_date, calx.advance(calc_date, per))
+        # par rate using the same src pricer
+        swap = price_vanilla_swap_with_curve(
+            calculation_date=calc_date,
+            notional=1.0,
+            start_date=spot,
+            maturity_date=calx.advance(spot, per),
+            fixed_rate=0.0,
+            fixed_leg_tenor=ql.Period(28, ql.Days),
+            fixed_leg_convention=ql.ModifiedFollowing,
+            fixed_leg_daycount=ql.Actual360(),
+            float_leg_tenor=ql.Period(28, ql.Days),
+            float_leg_spread=0.0,
+            ibor_index=ibor,
+            curve=ts,
+        )
+        xs.append(x)
+        ys.append(swap.fairRate())
+        labels.append(f"SWAP {tstr}")
+    return np.array(xs), np.array(ys), labels
+
 
 # Default theme on import
 register_theme()
