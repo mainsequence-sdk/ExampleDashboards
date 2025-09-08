@@ -11,6 +11,8 @@ matplotlib = "*"
 pydantic = "*"
 pandas = "*"
 plotly = "*"
+streamlit = "*"
+scipy = "*"
 
 [dev-packages]
 

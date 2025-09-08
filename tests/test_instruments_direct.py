@@ -38,7 +38,7 @@ def test_interest_rate_swap_direct():
     notional = 10_000_000
     start_date = dt.date(2025, 7, 23)
     maturity_date = dt.date(2030, 7, 23)
-    fixed_rate = 0.762
+    fixed_rate = .0780098200
     valuation_date = dt.date(2026, 1, 15)
 
     # Simple flat curve + USDLibor(3M) for float leg
@@ -67,17 +67,18 @@ def test_interest_rate_swap_direct():
 
 
 def test_tiie_swap():
+
     from src.instruments.interest_rate_swap import TIIESwap
+    from src.pricing_models.swap_pricer import debug_tiie_trade,build_tiie_zero_curve_from_valmer,make_tiie_28d_index,price_vanilla_swap_with_curve
     from src.utils import to_ql_date
-    # 156W tenor (3y) from start date, and correct par fixed rate 07381%
-    trade_date = dt.date(2025, 8, 12)  # valuation date (T)
+    trade_date = dt.date(2025, 9, 6)  # valuation date (T)
     swap = TIIESwap(
         notional=100_000_000,
         start_date=trade_date,  # we’ll move to spot internally
         maturity_date=trade_date,  # ignored when tenor is provided
         tenor=ql.Period("364W"),  #
-        fixed_rate=0.082098,  # 7.624865% in DECIMAL
-        valuation_date=trade_date,
+        fixed_rate=.0780098200,  # 7.624865% in DECIMAL
+        valuation_date=trade_date ,
         float_leg_spread=0.0,
         # legs default to 28D / ACT/360 / ModFollowing / Mexico in TIIESwap
     )
@@ -92,6 +93,31 @@ def test_tiie_swap():
     fixed_pv = swap._swap.fixedLegNPV()
     float_pv = swap._swap.floatingLegNPV()
 
+    # build the exact curve and index used by TIIESwap
+    ql_val = to_ql_date(swap.valuation_date)
+    curve = build_tiie_zero_curve_from_valmer(ql_val)
+    tiie28 = make_tiie_28d_index(curve)
+    debug_tiie_trade(ql_val, swap._swap, curve, tiie28)
+
+    def prove_curve_anchor(curve: ql.YieldTermStructureHandle, ibor_index: ql.IborIndex | None = None):
+        link = curve.currentLink()
+        ref = link.referenceDate()
+        evald = ql.Settings.instance().evaluationDate
+        print("\n[CURVE ANCHOR PROOF]")
+        print(
+            f"referenceDate: {ref.year():04d}-{ref.month():02d}-{ref.dayOfMonth():02d}  DF(ref)={curve.discount(ref):.8f}")
+        print(
+            f"evaluationDate: {evald.year():04d}-{evald.month():02d}-{evald.dayOfMonth():02d}  DF(eval)={curve.discount(evald):.8f}")
+        if ibor_index is not None:
+            cal = ibor_index.fixingCalendar()
+            fixing = cal.adjust(evald, ql.Following)
+            while not ibor_index.isValidFixingDate(fixing):
+                fixing = cal.advance(fixing, 1, ql.Days)
+            spot = ibor_index.valueDate(fixing)
+            print(
+                f"spot(T+1): {spot.year():04d}-{spot.month():02d}-{spot.dayOfMonth():02d}  DF(spot)={curve.discount(spot):.8f}")
+
+    prove_curve_anchor(curve, tiie28)
     print("NPV:", npv)
     print("Fixed PV:", fixed_pv)
     print("Float PV:", float_pv)
@@ -333,4 +359,4 @@ def test_knockout_fx_option():
 # test_plot_zero_curve_from_swaps()
 # test_plot_zero_curve_from_bonds()
 # test_knockout_fx_option()
-# test_tiie_swap()
+test_tiie_swap()

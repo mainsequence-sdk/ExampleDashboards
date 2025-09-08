@@ -204,20 +204,23 @@ class APIDataNode:
             if not os.path.exists(csv_path):
                 raise FileNotFoundError(f"TIIE zero curve CSV not found at: {csv_path}")
 
-            names = ["id", "curve_name", "maturity_date", "days_to_maturity", "zero_rate"]
+            names = ["id", "curve_name", "asof_yyMMdd", "idx", "zero_rate"]
             # STRICT: comma-separated, headerless, exactly these six columns
             df = pd.read_csv(csv_path, header=None, names=names, sep=",", engine="c", dtype=str)
             # pick a rate column
 
-            df["days_to_maturity"]=df["days_to_maturity"].astype(int)
-            df["zero_rate"] = df["zero_rate"].astype(float)/100
+            df["asof_yyMMdd"] = pd.to_datetime(df["asof_yyMMdd"], format="%y%m%d")
 
+            df["idx"] = df["idx"].astype(int)
+            df["days_to_maturity"]= (df["asof_yyMMdd"]-df["asof_yyMMdd"].iloc[0]).dt.days
+            df["zero_rate"] = df["zero_rate"].astype(float)/100
+            base_dt = df["asof_yyMMdd"].iloc[0].date()
             nodes = [
                 {"days_to_maturity": d, "zero": z}
                 for d, z in zip(df["days_to_maturity"], df["zero_rate"])
                 if d > 0
             ]
-            return {"curve_nodes": nodes}
+            return {"curve_nodes": nodes,"base_date":base_dt}
 
         else:
             raise ValueError(f"Table '{table_name}' not found in mock data API.")

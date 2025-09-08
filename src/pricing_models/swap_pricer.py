@@ -39,21 +39,68 @@ def add_historical_fixings(calculation_date: ql.Date, ibor_index: ql.IborIndex):
     ibor_index.addFixings(valid_qld, valid_rates, True)
     print(f"Successfully added {len(valid_qld)} fixings for {ibor_index.name()}.")
 
-def build_tiie_zero_curve_from_valmer(calculation_date: ql.Date) -> ql.YieldTermStructureHandle:
+
+def _coerce_to_ql_date(x, fallback: ql.Date) -> ql.Date:
+    """Coerce various date-like inputs to ql.Date, or return fallback."""
+    if x is None:
+        return fallback
+    if isinstance(x, ql.Date):
+        return x
+    if isinstance(x, datetime.date):
+        return to_ql_date(x)
+    if isinstance(x, str):
+        try:
+            return to_ql_date(datetime.date.fromisoformat(x))
+        except Exception:
+            return fallback
+    # pandas.Timestamp / numpy datetime64
+    try:
+        if hasattr(x, "to_pydatetime"):
+            return to_ql_date(x.to_pydatetime().date())
+    except Exception:
+        pass
+    return fallback
+
+def build_tiie_zero_curve_from_valmer(_: ql.Date | None = None) -> ql.YieldTermStructureHandle:
     market = APIDataNode.get_historical_data("tiie_zero_valmer", {"MXN": {}})
-    nodes = market["curve_nodes"]
+    nodes  = market["curve_nodes"]
+    base_py = market["base_date"]           # Python date from CSV
+    base = to_ql_date(base_py)
 
     cal = ql.Mexico() if hasattr(ql, "Mexico") else ql.TARGET()
-    dc  = ql.Actual360()  # TIIE convention
-    dates, zeros = [], []
-    for n in nodes:
-        d = cal.advance(calculation_date, int(n["days_to_maturity"]), ql.Days)
-        dates.append(d)
-        zeros.append(float(n["zero"]))
+    dc  = ql.Actual360()
 
-    zc = ql.ZeroCurve(dates, zeros, dc, cal)
-    zc.enableExtrapolation()
-    return ql.YieldTermStructureHandle(zc)
+    # Reference date is the CSV base_date; discount( base_date ) := 1.0
+    dates = [base]
+    discounts = [1.0]
+    seen = {base.serialNumber()}
+
+    for n in sorted(nodes, key=lambda n: int(n["days_to_maturity"])):
+        days = int(n["days_to_maturity"])
+        if days < 0:
+            continue
+        d=base_py+datetime.timedelta(days=days)
+        d=to_ql_date(d)
+
+        sn = d.serialNumber()
+        if sn in seen:
+            continue
+
+        z = n.get("zero", n.get("zero_rate", n.get("rate")))
+        z = float(z)
+        if z > 1.0:  # CSV percent -> decimal
+            z *= 0.01
+
+        T = dc.yearFraction(base, d)
+        df = 1.0 / (1.0 + z * T)   # Valmer zero is simple ACT/360
+
+        dates.append(d)
+        discounts.append(df)
+        seen.add(sn)
+
+    ts = ql.DiscountCurve(dates, discounts, dc, cal)
+    ts.enableExtrapolation()
+    return ql.YieldTermStructureHandle(ts)
 
 
 def make_ftiie_index(curve: ql.YieldTermStructureHandle,
@@ -154,6 +201,7 @@ def build_yield_curve(calculation_date: ql.Date) -> ql.YieldTermStructureHandle:
     print("Yield curve built successfully.")
     return ql.YieldTermStructureHandle(yield_curve)
 
+# src/pricing_models/swap_pricer.py
 def price_vanilla_swap_with_curve(
     calculation_date: ql.Date,
     notional: float,
@@ -169,21 +217,24 @@ def price_vanilla_swap_with_curve(
     curve: ql.YieldTermStructureHandle,
     past_fixing_rate: float | None = None,
 ) -> ql.VanillaSwap:
+    # --- evaluation settings ---
     ql.Settings.instance().evaluationDate = calculation_date
+    ql.Settings.instance().includeReferenceDateEvents = False
+    ql.Settings.instance().enforceTodaysHistoricFixings = False
 
-    # Link the pricing index to the provided curve
+    # index linked to the provided curve
     pricing_ibor_index = ibor_index.clone(curve)
     calendar = pricing_ibor_index.fixingCalendar()
 
     # --------- EFFECTIVE DATES (spot start safeguard) ----------
-    # If user passed trade date (T) or anything <= eval, move to spot (T+settlement)
-    spot_start = pricing_ibor_index.valueDate(calculation_date)
-    eff_start = start_date if start_date > calculation_date else spot_start
+    fixingDate = calendar.adjust(calculation_date, ql.Following)
+    while not pricing_ibor_index.isValidFixingDate(fixingDate):
+        fixingDate = calendar.advance(fixingDate, 1, ql.Days)
+    spot_start = pricing_ibor_index.valueDate(fixingDate)
 
-    # Ensure termination is strictly after effective start
+    eff_start = start_date if start_date > calculation_date else spot_start
     eff_end = maturity_date
     if eff_end <= eff_start:
-        # Minimum length: one floating period (e.g., 28D for TIIE)
         eff_end = calendar.advance(eff_start, float_leg_tenor)
 
     # --------- Schedules ----------
@@ -211,24 +262,29 @@ def price_vanilla_swap_with_curve(
         pricing_ibor_index.dayCounter()
     )
 
-    # --------- Past fixings fill (earliest node) ----------
-    if past_fixing_rate is None:
-        # derive a simple forward from the curve at +tenor (no t<0 queries)
-        dc = pricing_ibor_index.dayCounter()
-        probe_date = calendar.advance(calculation_date, pricing_ibor_index.tenor())
-        past_fixing_rate = curve.zeroRate(probe_date, dc, ql.Continuous, ql.Annual).rate()
-
+    # --------- Seed past fixings from the curve (coupon by coupon) ----------
+    # For any coupon whose fixing date <= evaluation date, insert the forward
+    # implied by *this same curve* for that coupon’s accrual period (ACT/360 simple).
+    dc = pricing_ibor_index.dayCounter()
     for cf in swap.leg(1):
         cup = ql.as_floating_rate_coupon(cf)
         fix = cup.fixingDate()
         if fix <= calculation_date:
+            # If a real fixing already exists, leave it
             try:
                 _ = pricing_ibor_index.fixing(fix)
             except RuntimeError:
-                pricing_ibor_index.addFixing(fix, past_fixing_rate)
+                start = cup.accrualStartDate()
+                end   = cup.accrualEndDate()
+                tau   = dc.yearFraction(start, end)
+                df0   = curve.discount(start)
+                df1   = curve.discount(end)
+                fwd   = (df0 / df1 - 1.0) / tau      # simple ACT/360
+                pricing_ibor_index.addFixing(fix, fwd)
 
     swap.setPricingEngine(ql.DiscountingSwapEngine(curve))
     return swap
+
 
 
 def price_vanilla_swap(calculation_date: ql.Date, notional: float, start_date: ql.Date,
@@ -385,7 +441,11 @@ def price_ftiie_ois_with_curve(
     cal = on_index.fixingCalendar()
 
     # -------- Spot start (T+1 Mexico) with tenor preservation --------
-    spot_start = on_index.valueDate(calculation_date)
+    fixing = cal.adjust(calculation_date, ql.Following)
+    while not on_index.isValidFixingDate(fixing):
+        fixing = cal.advance(fixing, 1, ql.Days)
+    spot_start = on_index.valueDate(fixing)
+
     start_shifted = (start_date <= calculation_date)
     eff_start = start_date if not start_shifted else spot_start
 
@@ -419,3 +479,191 @@ def price_ftiie_ois_with_curve(
     ois.setPricingEngine(ql.DiscountingSwapEngine(curve))
     return ois
 
+
+import math
+
+# --- add in: src/pricing_models/swap_pricer.py ---
+def debug_swap_coupons(
+    swap: ql.VanillaSwap,
+    curve: ql.YieldTermStructureHandle,
+    ibor_index: ql.IborIndex,
+    header: str = "[SWAP COUPON DEBUG]",
+    show_past: bool = True,
+    max_rows: int | None = None,
+) -> None:
+    """
+    Print coupon-by-coupon diagnostics for fixed and floating legs:
+    accrual dates, fixing date, year fractions, forward/used rate, amount, DF and PV.
+    """
+    print("\n" + header)
+    asof = ql.Settings.instance().evaluationDate
+    print(f"evalDate: {_fmt(asof)}  notional: {swap.nominal()}")
+    print(f"index: {ibor_index.name()}  tenor: {ibor_index.tenor().length()} {ibor_index.tenor().units()}  "
+          f"DC(float)={type(ibor_index.dayCounter()).__name__}")
+
+    # ---- fixed leg ----
+    print("\n[FIXED LEG]")
+    fixed_dc = swap.fixedDayCount()
+    fixed_rate = swap.fixedRate()
+    print(f"fixed rate input: {fixed_rate:.8f}   DC(fixed)={type(fixed_dc).__name__}")
+
+    print(f"{'#':>3} {'accrualStart':>12} {'accrualEnd':>12} {'pay':>12} {'tau':>8} "
+          f"{'df':>12} {'amount':>14} {'pv':>14}")
+    print("-" * 96)
+    pv_fixed = 0.0
+    rows = 0
+    for i, cf in enumerate(swap.leg(0)):
+        c: ql.FixedRateCoupon = ql.as_fixed_rate_coupon(cf)
+        if (not show_past) and cf.hasOccurred(asof):
+            continue
+        tau = fixed_dc.yearFraction(c.accrualStartDate(), c.accrualEndDate())
+        df  = curve.discount(c.date())
+        amt = c.amount()  # already notional * rate * tau
+        pv  = amt * df
+        pv_fixed += pv
+        print(f"{i:3d} {_fmt(c.accrualStartDate()):>12} {_fmt(c.accrualEndDate()):>12} {_fmt(c.date()):>12} "
+              f"{tau:8.5f} {df:12.8f} {amt:14.2f} {pv:14.2f}")
+        rows += 1
+        if max_rows and rows >= max_rows:
+            break
+
+    # ---- float leg ----
+    print("\n[FLOAT LEG]")
+    f_dc = ibor_index.dayCounter()
+    print(f"spread: {swap.spread():.8f}   DC(float)={type(f_dc).__name__}")
+    print(f"{'#':>3} {'fix':>12} {'accrualStart':>12} {'accrualEnd':>12} {'pay':>12} {'tau':>8} "
+          f"{'hasFix':>6} {'idxUsed':>10} {'fwdCurve':>10} {'rateUsed':>10} {'df':>12} {'amount':>14} {'pv':>14}")
+    print("-" * 144)
+    pv_float = 0.0
+    rows = 0
+    for i, cf in enumerate(swap.leg(1)):
+        c: ql.FloatingRateCoupon = ql.as_floating_rate_coupon(cf)
+        if (not show_past) and cf.hasOccurred(asof):
+            continue
+        tau = f_dc.yearFraction(c.accrualStartDate(), c.accrualEndDate())
+        df  = curve.discount(c.date())
+
+        # curve-implied forward over this exact accrual
+        df0 = curve.discount(c.accrualStartDate())
+        df1 = curve.discount(c.accrualEndDate())
+        fwd = (df0/df1 - 1.0) / max(tau, 1e-12)
+
+        # fixing available?
+        has_fix = False
+        idx_used = math.nan
+        try:
+            idx_used = ibor_index.fixing(c.fixingDate())
+            has_fix = True
+        except RuntimeError:
+            pass
+
+        rate_used = c.rate()  # will be fixing (if present) else forward + spread
+        amt = c.amount()
+        pv  = amt * df
+        pv_float += pv
+
+        print(f"{i:3d} {_fmt(c.fixingDate()):>12} {_fmt(c.accrualStartDate()):>12} {_fmt(c.accrualEndDate()):>12} "
+              f"{_fmt(c.date()):>12} {tau:8.5f} {str(has_fix):>6} "
+              f"{(idx_used if has_fix else float('nan')):10.6f} {fwd:10.6f} {rate_used:10.6f} "
+              f"{df:12.8f} {amt:14.2f} {pv:14.2f}")
+
+        rows += 1
+        if max_rows and rows >= max_rows:
+            break
+
+    # ---- summary / par checks ----
+    print("\n[PV DECOMP]")
+    print(f"PV_fixed : {pv_fixed:,.2f}")
+    print(f"PV_float : {pv_float:,.2f}")
+    print(f"NPV (QL) : {swap.NPV():,.2f}")
+
+    # annuity of the fixed leg (Σ tau_i * df_i on fixed pay dates)
+    annuity = 0.0
+    for cf in swap.leg(0):
+        c = ql.as_fixed_rate_coupon(cf)
+        tau = fixed_dc.yearFraction(c.accrualStartDate(), c.accrualEndDate())
+        df  = curve.discount(c.date())
+        annuity += tau * df
+
+    # coupon-by-coupon float PV using curve forwards (no spread)
+    float_pv_curve = 0.0
+    for cf in swap.leg(1):
+        c = ql.as_floating_rate_coupon(cf)
+        tau = f_dc.yearFraction(c.accrualStartDate(), c.accrualEndDate())
+        df  = curve.discount(c.date())
+        df0 = curve.discount(c.accrualStartDate())
+        df1 = curve.discount(c.accrualEndDate())
+        fwd = (df0/df1 - 1.0) / max(tau, 1e-12)
+        float_pv_curve += swap.nominal() * (fwd + c.spread()) * tau * df
+
+    # par fixed rate from curve coupons
+    par_from_coupons = float_pv_curve / max(annuity * swap.nominal(), 1e-12)
+
+    # also the classic (1 - DF(T)) / annuity formula (works when float = same curve, no stubs)
+    # approximate float PV = notional*(DF(start) - DF(end))
+    try:
+        start = ql.as_floating_rate_coupon(swap.leg(1)[0]).accrualStartDate()
+        end   = ql.as_floating_rate_coupon(swap.leg(1)[-1]).accrualEndDate()
+        par_alt = (curve.discount(start) - curve.discount(end)) / max(annuity, 1e-12)
+    except Exception:
+        par_alt = float('nan')
+
+    print(f"Annuity (fixed)           : {annuity:,.8f}")
+    print(f"Par (from curve coupons)  : {par_from_coupons:,.8f}")
+    print(f"Par (alt 1-DF/annuity)    : {par_alt:,.8f}")
+    print(f"Par (QL fairRate)         : {swap.fairRate():,.8f}")
+    print()
+
+def _fmt(qld: ql.Date) -> str:
+    return f"{qld.year():04d}-{qld.month():02d}-{qld.dayOfMonth():02d}"
+
+def debug_tiie_zero_curve(
+        calculation_date: ql.Date,
+        curve: ql.YieldTermStructureHandle,
+        cal: ql.Calendar | None = None,
+        day_count: ql.DayCounter | None = None,
+        sample_months: list[int] | None = None,
+        header: str = "[TIIE ZERO CURVE DEBUG]"
+) -> None:
+    """
+    Print a readable snapshot of the zero curve: sample maturities, DFs and zero rates.
+    """
+    print("\n" + header)
+    ql.Settings.instance().evaluationDate = calculation_date
+    cal = cal or (ql.Mexico() if hasattr(ql, "Mexico") else ql.TARGET())
+    dc = day_count or ql.Actual360()
+
+    asof = calculation_date
+    print(f"asof (evalDate): {_fmt(asof)}")
+    try:
+        link = curve.currentLink()
+        print(f"curve link: {type(link).__name__} (extrap={'Yes' if link.allowsExtrapolation() else 'No'})")
+    except Exception:
+        pass
+
+    # sampling grid
+    if sample_months is None:
+        sample_months = [1, 2, 3, 6, 9, 12,
+                         18, 24, 36, 48, 60, 84]  # up to 7Y
+
+    print(f"{'m (M)':>6} {'date':>12} {'T(yr)':>8} {'DF':>12} {'Zero(%)':>10}")
+    print("-" * 52)
+    for m in sample_months:
+        d = cal.advance(asof, ql.Period(m, ql.Months))
+        T = dc.yearFraction(asof, d)
+        df = curve.discount(d)
+        z = curve.zeroRate(d, dc, ql.Continuous, ql.Annual).rate() * 100.0
+        print(f"{m:6d} {_fmt(d):>12} {T:8.5f} {df:12.8f} {z:10.4f}")
+    print()
+
+def debug_tiie_trade(
+    valuation_date: ql.Date,
+    swap: ql.VanillaSwap,
+    curve: ql.YieldTermStructureHandle,
+    ibor_index: ql.IborIndex
+) -> None:
+    """
+    Convenience wrapper: dump curve snapshot and full coupon drilldown for a TIIE swap.
+    """
+    debug_tiie_zero_curve(valuation_date, curve)
+    debug_swap_coupons(swap, curve, ibor_index)

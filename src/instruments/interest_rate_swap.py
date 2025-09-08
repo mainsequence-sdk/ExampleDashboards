@@ -115,23 +115,38 @@ class TIIESwap(InterestRateSwap):
 
         ql_val = to_ql_date(self.valuation_date)
         ql.Settings.instance().evaluationDate = ql_val
+        ql.Settings.instance().includeReferenceDateEvents = False
+        ql.Settings.instance().enforceTodaysHistoricFixings = False
 
-        # Use your existing curve builder for now; replace with an FTIIE curve if available
-        curve = build_tiie_zero_curve_from_valmer(ql_val)
+        # 1) Build TIIE curve from CSV base_date (no re-anchoring to 'today')
+        curve = build_tiie_zero_curve_from_valmer(None)
 
-        # Overnight FTIIE index (no USD fallback)
-        on_index = make_ftiie_index(curve)
+        # 2) TIIE-28D index on that curve
+        tiie = make_tiie_28d_index(curve)
+        cal = tiie.fixingCalendar()
 
-        # Price a fixed-vs-FTIIE OIS (fixed leg still 28D, ACT/360, ModFollowing)
-        self._swap = price_ftiie_ois_with_curve(
+        # 3) Effective start = T+1 FROM TRADE (your start_date), not valueDate()
+        trade = to_ql_date(self.start_date)
+        eff_start = cal.adjust(trade, ql.Following)  # e.g., 2025-09-06 -> 2025-09-08
+
+        # 4) Effective end
+        if self.tenor is not None:
+            eff_end = cal.advance(eff_start, self.tenor)
+        else:
+            eff_end = to_ql_date(self.maturity_date)
+
+        # 5) Price vanilla IRS using that schedule and the static curve
+        self._swap = price_vanilla_swap_with_curve(
             calculation_date=ql_val,
             notional=self.notional,
-            start_date=to_ql_date(self.start_date),
-            maturity_date=to_ql_date(self.maturity_date),
+            start_date=eff_start,
+            maturity_date=eff_end,
             fixed_rate=self.fixed_rate,
-            fixed_leg_tenor=self.fixed_leg_tenor,  # now accepted
+            fixed_leg_tenor=self.fixed_leg_tenor,
             fixed_leg_convention=self.fixed_leg_convention,
             fixed_leg_daycount=self.fixed_leg_daycount,
-            on_index=on_index,
+            float_leg_tenor=self.float_leg_tenor,
+            float_leg_spread=self.float_leg_spread,
+            ibor_index=tiie,
             curve=curve,
         )
