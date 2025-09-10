@@ -164,8 +164,8 @@ class FloatingRateBond(BaseModel, JSONMixin):
             # If the index is already linked to a forwarding curve, price like the swap
             try:
                 curve = self.floating_rate_index.forwardingTermStructure()
-            except Exception:
-                curve = ql.YieldTermStructureHandle()
+            except Exception as e:
+                raise e
             self._build_bond(curve)
 
 

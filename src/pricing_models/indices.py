@@ -43,6 +43,8 @@ from typing import Callable, Dict, Optional, Tuple
 import QuantLib as ql
 from functools import lru_cache
 
+from src.utils import to_py_date
+
 
 # ----------------------------- Normalization helpers ----------------------------- #
 
@@ -254,15 +256,19 @@ def add_historical_fixings(calculation_date: ql.Date, ibor_index: ql.IborIndex):
     # --- NEW: allow overwriting if some dates already have a fixing
     ibor_index.addFixings(valid_qld, valid_rates, True)
     print(f"Successfully added {len(valid_qld)} fixings for {ibor_index.name()}.")
-def build_tiie_zero_curve_from_valmer(_: ql.Date | None = None) -> ql.YieldTermStructureHandle:
+def build_tiie_zero_curve_from_valmer(target_date: ql.Date | None = None) -> ql.YieldTermStructureHandle:
     from src.data_interface import APIDataNode
     from src.utils import to_ql_date
     import datetime
 
     market = APIDataNode.get_historical_data("tiie_zero_valmer", {"MXN": {}})
     nodes  = market["curve_nodes"]
-    base_py = market["base_date"]           # Python date from CSV
-    base = to_ql_date(base_py)
+    if target_date is not None:
+        base=target_date
+        base_py=to_py_date(target_date)
+    else:
+        base_py = market["base_date"]           # Python date from CSV
+        base = to_ql_date(base_py)
 
     cal = ql.Mexico() if hasattr(ql, "Mexico") else ql.TARGET()
     dc  = ql.Actual360()
