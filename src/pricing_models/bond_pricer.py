@@ -171,6 +171,7 @@ def create_fixed_rate_bond(
     bond.setPricingEngine(ql.DiscountingBondEngine(discount_curve))
     return bond
 
+
 def create_floating_rate_bond_with_curve(
     *,
     calculation_date: ql.Date,
@@ -188,22 +189,32 @@ def create_floating_rate_bond_with_curve(
     seed_past_fixings_from_curve: bool = True,
 ) -> ql.FloatingRateBond:
     """
-    Build a floating-rate bond priced like your swap-with-curve:
-    - clone index to the provided curve
-    - settle 'today' behavior (no historic fixing needed)
-    - seed past/today fixings from the same curve
-    - discount with the same curve
+    Build/prices a floating-rate bond like your swap-with-curve:
+      - clone index to 'curve'
+      - spot-start safeguard
+      - seed past/today fixings from the same curve
+      - discount with the same curve
     """
-    if curve is None or curve.empty():
-        raise ValueError("create_floating_rate_bond_with_curve: 'curve' must be a non-empty handle")
 
-    # --- evaluation settings (match your swap) ---
+    # --- evaluation settings (match swap) ---
     ql.Settings.instance().evaluationDate = calculation_date
     ql.Settings.instance().includeReferenceDateEvents = False
     ql.Settings.instance().enforceTodaysHistoricFixings = False
 
+    if curve is None:
+        raise ValueError("create_floating_rate_bond_with_curve: 'curve' is None")
+    # Probe the handle by attempting a discount on calculation_date.
+    # If the handle is unlinked/invalid this will raise; we convert it to a clear message.
+    try:
+        _ = curve.discount(calculation_date)
+    except Exception as e:
+        raise ValueError(
+            "create_floating_rate_bond_with_curve: provided curve handle "
+            "is not linked or cannot discount on calculation_date"
+        ) from e
+
     # --- index & calendars ---
-    pricing_index = floating_rate_index.clone(curve)  # forecasting with the given curve
+    pricing_index = floating_rate_index.clone(curve)  # forecast on the provided curve
     cal = calendar or pricing_index.fixingCalendar()
     freq = coupon_frequency or pricing_index.tenor()
     dc = day_count or pricing_index.dayCounter()
@@ -234,16 +245,16 @@ def create_floating_rate_bond_with_curve(
         pricing_index,
         dc,
         business_day_convention,
-        pricing_index.fixingDays(),   # use index fixingDays if any
-        [1.0],                        # gearings
-        [spread],                     # spreads
-        [], [],                       # caps, floors
-        False,                        # inArrears
-        100.0,                        # redemption
+        pricing_index.fixingDays(),
+        [1.0],             # gearings
+        [spread],          # spreads
+        [], [],            # caps, floors
+        False,             # inArrears
+        100.0,             # redemption
         issue_date
     )
 
-    # --------- Seed past/today fixings from the curve ----------
+    # --------- Seed past/today fixings from this same curve ----------
     if seed_past_fixings_from_curve:
         for cf in bond.cashflows():
             cup = ql.as_floating_rate_coupon(cf)
@@ -252,7 +263,7 @@ def create_floating_rate_bond_with_curve(
             fix = cup.fixingDate()
             if fix <= calculation_date:
                 try:
-                    # leave real history in place if it already exists
+                    # If a real fixing exists already, leave it
                     _ = pricing_index.fixing(fix)
                 except RuntimeError:
                     start = cup.accrualStartDate()
@@ -266,6 +277,8 @@ def create_floating_rate_bond_with_curve(
     # --------- Pricing engine ----------
     bond.setPricingEngine(ql.DiscountingBondEngine(curve))
     return bond
+
+
 def create_floating_rate_bond(
     calculation_date: ql.Date,
     face: float,

@@ -116,7 +116,7 @@ class FloatingRateBond(BaseModel, JSONMixin):
             except Exception:
                 curve = ql.YieldTermStructureHandle()
 
-            if curve and not curve.empty():
+            if curve is not None:
                 self._bond = create_floating_rate_bond_with_curve(
                     calculation_date=ql_calc_date,
                     face=self.face_value,
