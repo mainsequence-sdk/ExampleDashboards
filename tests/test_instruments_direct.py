@@ -18,6 +18,7 @@ except Exception:
 from src.instruments.european_option import EuropeanOption
 from src.instruments.interest_rate_swap import InterestRateSwap
 from src.instruments.fixed_rate_bond import FixedRateBond
+from src.instruments.floating_rate_bond import FloatingRateBond
 from src.instruments.vanilla_fx_option import VanillaFXOption
 from src.instruments.knockout_fx_option import KnockOutFXOption
 
@@ -67,33 +68,57 @@ def test_interest_rate_swap_direct():
 
 
 def test_tiie_swap():
+    import datetime as dt
+    import QuantLib as ql
 
     from src.instruments.interest_rate_swap import TIIESwap
-    from src.pricing_models.swap_pricer import debug_tiie_trade,build_tiie_zero_curve_from_valmer,make_tiie_28d_index,price_vanilla_swap_with_curve
+    from src.pricing_models.swap_pricer import (
+        debug_tiie_trade,
+
+    )
+    from src.pricing_models.indices import (
+        build_tiie_zero_curve_from_valmer,
+        make_tiie_28d_index,
+    )
     from src.utils import to_ql_date
+
+    # --- Build the original swap ---
     trade_date = dt.date(2025, 9, 6)  # valuation date (T)
     swap = TIIESwap(
         notional=100_000_000,
-        start_date=trade_date,  # we’ll move to spot internally
-        maturity_date=trade_date,  # ignored when tenor is provided
-        tenor=ql.Period("364W"),  #
-        fixed_rate=.0780098200,  # 7.624865% in DECIMAL
-        valuation_date=trade_date ,
+        start_date=trade_date,              # we’ll move to spot internally
+        maturity_date=trade_date,           # ignored when tenor is provided
+        tenor=ql.Period("364W"),
+        fixed_rate=0.0780098200,            # 7.80098200% in DECIMAL
+        valuation_date=trade_date,
         float_leg_spread=0.0,
         # legs default to 28D / ACT/360 / ModFollowing / Mexico in TIIESwap
     )
 
+    # (Redundant but harmless; TIIESwap._setup_pricer also sets this)
     ql.Settings.instance().evaluationDate = to_ql_date(swap.valuation_date)
 
-    npv = swap.price()
-    fair = swap._swap.fairRate()
-    print("NPV:", npv, "Fair:", fair)
+    # Price original
+    npv1 = swap.price()
+    fair1 = swap._swap.fairRate()
+    fixed_pv1 = swap._swap.fixedLegNPV()
+    float_pv1 = swap._swap.floatingLegNPV()
+    print("ORIG  NPV:", npv1, "Fair:", fair1)
+    print("ORIG  Fixed PV:", fixed_pv1, "Float PV:", float_pv1)
 
-    npv = swap.price()
-    fixed_pv = swap._swap.fixedLegNPV()
-    float_pv = swap._swap.floatingLegNPV()
+    # --- JSON round-trip ---
+    payload = swap.to_json()                 # dump to JSON string
+    swap2 = TIIESwap.from_json(payload)      # rebuild from JSON
 
-    # build the exact curve and index used by TIIESwap
+    # Price rebuilt
+    npv2 = swap2.price()
+    fair2 = swap2._swap.fairRate()
+    fixed_pv2 = swap2._swap.fixedLegNPV()
+    float_pv2 = swap2._swap.floatingLegNPV()
+    print("ROUND NPV:", npv2, "Fair:", fair2)
+    print("ROUND Fixed PV:", fixed_pv2, "Float PV:", float_pv2)
+
+    # --- Build the exact curve and index used by TIIESwap for debug output ---
     ql_val = to_ql_date(swap.valuation_date)
     curve = build_tiie_zero_curve_from_valmer(ql_val)
     tiie28 = make_tiie_28d_index(curve)
@@ -105,9 +130,11 @@ def test_tiie_swap():
         evald = ql.Settings.instance().evaluationDate
         print("\n[CURVE ANCHOR PROOF]")
         print(
-            f"referenceDate: {ref.year():04d}-{ref.month():02d}-{ref.dayOfMonth():02d}  DF(ref)={curve.discount(ref):.8f}")
+            f"referenceDate: {ref.year():04d}-{ref.month():02d}-{ref.dayOfMonth():02d}  DF(ref)={curve.discount(ref):.8f}"
+        )
         print(
-            f"evaluationDate: {evald.year():04d}-{evald.month():02d}-{evald.dayOfMonth():02d}  DF(eval)={curve.discount(evald):.8f}")
+            f"evaluationDate: {evald.year():04d}-{evald.month():02d}-{evald.dayOfMonth():02d}  DF(eval)={curve.discount(evald):.8f}"
+        )
         if ibor_index is not None:
             cal = ibor_index.fixingCalendar()
             fixing = cal.adjust(evald, ql.Following)
@@ -115,16 +142,26 @@ def test_tiie_swap():
                 fixing = cal.advance(fixing, 1, ql.Days)
             spot = ibor_index.valueDate(fixing)
             print(
-                f"spot(T+1): {spot.year():04d}-{spot.month():02d}-{spot.dayOfMonth():02d}  DF(spot)={curve.discount(spot):.8f}")
+                f"spot(T+1): {spot.year():04d}-{spot.month():02d}-{spot.dayOfMonth():02d}  DF(spot)={curve.discount(spot):.8f}"
+            )
 
     prove_curve_anchor(curve, tiie28)
-    print("NPV:", npv)
-    print("Fixed PV:", fixed_pv)
-    print("Float PV:", float_pv)
 
+    # --- Assertions ---
+    notional = swap.notional
     # Par checks: fixed leg PV ~ notional; total NPV ~ 0
-    assert abs(fixed_pv - swap.notional) / swap.notional < 5e-3
-    assert abs(npv) < 1e-2 * swap.notional
+    assert abs(fixed_pv1 - notional) / notional < 5e-3
+    assert abs(npv1) < 1e-2 * notional
+
+    # Round-trip invariants (tight but safe tolerances)
+    atol = 1e-6 * notional        # e.g., 100 on 100mm
+    rtol = 1e-9
+
+    assert abs(npv2 - npv1) <= max(atol, rtol * abs(npv1))
+    assert abs(fair2 - fair1) <= 1e-10
+    assert abs(fixed_pv2 - fixed_pv1) <= max(atol, rtol * abs(fixed_pv1))
+    assert abs(float_pv2 - float_pv1) <= max(atol, rtol * abs(float_pv1))
+
 
 def test_fixed_rate_bond_direct():
     import QuantLib as ql
@@ -147,6 +184,102 @@ def test_fixed_rate_bond_direct():
     assert _is_finite_number(analytics["clean_price"])
     assert _is_finite_number(analytics["dirty_price"])
     assert _is_finite_number(analytics["accrued_amount"])
+
+
+def test_floating_rate_bond_direct():
+    import QuantLib as ql
+
+    # Create a simple flat yield curve for the floating rate index
+    ql.Settings.instance().evaluationDate = ql.Date(12, 8, 2025)
+    flat_yts = ql.YieldTermStructureHandle(
+        ql.FlatForward(ql.Date(12, 8, 2025), 0.03, ql.Actual365Fixed())
+    )
+
+    # Create a USD LIBOR 3M index
+    ibor_index = ql.USDLibor(ql.Period("3M"), flat_yts)
+
+    # Add a fixing for the LIBOR index to avoid missing fixing error
+    # The fixing date should be a few days before the valuation date
+    fixing_date = ql.Date(8, 8, 2025)  # August 8th, 2025
+    fixing_rate = 0.03  # 3% fixing rate
+    ibor_index.addFixing(fixing_date, fixing_rate)
+
+    bond = FloatingRateBond(
+        face_value=1_000_000,
+        floating_rate_index=ibor_index,
+        spread=0.0025,  # 25 basis points spread
+        issue_date=dt.date(2024, 8, 12),
+        maturity_date=dt.date(2026, 8, 12),
+        coupon_frequency=ql.Period("3M"),
+        day_count=ql.Actual360(),
+        valuation_date=dt.date(2025, 8, 12),
+    )
+
+    npv = bond.price()
+    analytics = bond.analytics()
+
+    print(npv)
+    assert _is_finite_number(npv)
+    assert {"clean_price", "dirty_price", "accrued_amount"} <= analytics.keys()
+    assert _is_finite_number(analytics["clean_price"])
+    assert _is_finite_number(analytics["dirty_price"])
+    assert _is_finite_number(analytics["accrued_amount"])
+
+    # Test that the floating rate index is properly specified
+    assert bond.floating_rate_index.name() == "USDLibor3M Actual/360"
+    assert bond.spread == 0.0025
+
+    # Test TIIE-based floating rate bond with 0 spread
+    # Use the same parameters as test_tiie_swap
+    from src.pricing_models.indices import build_tiie_zero_curve_from_valmer,make_tiie_28d_index
+    from src.utils import to_ql_date
+
+    trade_date = dt.date(2025, 9, 6)  # Same as test_tiie_swap
+    ql_trade_date = to_ql_date(trade_date)
+
+    # Calculate maturity date using same tenor as TIIE swap (364W)
+    tenor = ql.Period("364W")
+    cal = ql.Mexico() if hasattr(ql, "Mexico") else ql.TARGET()
+    maturity_date_ql = cal.advance(ql_trade_date, tenor)
+    maturity_date = dt.date(maturity_date_ql.year(), maturity_date_ql.month(), maturity_date_ql.dayOfMonth())
+
+    # Build the same TIIE curve as used in the swap
+    tiie_curve = build_tiie_zero_curve_from_valmer(ql_trade_date)
+    tiie_index = make_tiie_28d_index(tiie_curve)
+
+    # Set evaluation date to match the trade date
+    ql.Settings.instance().evaluationDate = ql_trade_date
+
+    # Add historical fixings for the TIIE index to avoid missing fixing error
+
+    # from src.pricing_models.swap_pricer import add_historical_fixings
+    # add_historical_fixings(ql_trade_date, tiie_index)
+
+
+    tiie_bond = FloatingRateBond(
+        face_value=1_000_000,
+        floating_rate_index=tiie_index,
+        spread=0.0,  # 0 spread as requested
+        issue_date=trade_date,  # Same as trade_date
+        maturity_date=maturity_date,  # Calculated from 364W tenor
+        coupon_frequency=ql.Period("28D"),  # TIIE is 28-day tenor
+        day_count=ql.Actual360(),
+        valuation_date=trade_date,  # Same as trade_date
+    )
+
+    tiie_npv = tiie_bond.price()
+    tiie_analytics = tiie_bond.analytics()
+    print(tiie_npv)
+
+    assert _is_finite_number(tiie_npv)
+    assert {"clean_price", "dirty_price", "accrued_amount"} <= tiie_analytics.keys()
+    assert _is_finite_number(tiie_analytics["clean_price"])
+    assert _is_finite_number(tiie_analytics["dirty_price"])
+    assert _is_finite_number(tiie_analytics["accrued_amount"])
+
+    # Test that the TIIE floating rate index is properly specified
+    assert tiie_bond.floating_rate_index.name() == "TIIE-28D28D Actual/360"
+    assert tiie_bond.spread == 0.0
 
 
 def test_european_option_direct():
@@ -351,6 +484,15 @@ def test_knockout_fx_option():
         traceback.print_exc()
         return False
 
+def test_position():
+    import json
+    from src.instruments import Position
+    with open("/home/jose/code/MainSequenceClientSide/QuantLibDev/tests/position.json", "r") as fh:
+        positions=json.load(fh)
+
+    position=Position.from_json_dict(positions)
+    position.price()
+    a=5
 
 # test_european_option_direct()
 # test_fixed_rate_bond_direct()
@@ -359,4 +501,6 @@ def test_knockout_fx_option():
 # test_plot_zero_curve_from_swaps()
 # test_plot_zero_curve_from_bonds()
 # test_knockout_fx_option()
-test_tiie_swap()
+# test_tiie_swap()
+test_floating_rate_bond_direct()
+test_position()

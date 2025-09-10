@@ -1,0 +1,44 @@
+{
+  "lines": [
+    {
+      "instrument_type": "TIIESwap",
+      "units": 1.0,
+      "instrument": {
+        "notional": 100000000.0,
+        "start_date": "2025-09-06",
+        "maturity_date": "2025-09-06",
+        "fixed_rate": 0.07800982,
+        "fixed_leg_tenor": "28D",
+        "fixed_leg_convention": 1,
+        "fixed_leg_daycount": "Actual360",
+        "float_leg_tenor": "28D",
+        "float_leg_spread": 0.0,
+        "float_leg_ibor_index": null,
+        "valuation_date": "2025-09-06",
+        "tenor": "364W"
+      }
+    },
+    {
+      "instrument_type": "FloatingRateBond",
+      "units": 1.0,
+      "instrument": {
+        "face_value": 1000000.0,
+        "floating_rate_index": {
+          "family": "TIIE-28D",
+          "tenor": "28D"
+        },
+        "spread": 0.0,
+        "issue_date": "2025-09-06",
+        "maturity_date": "2032-08-30",
+        "coupon_frequency": "28D",
+        "day_count": "Actual360",
+        "calendar": {
+          "name": "TARGET"
+        },
+        "business_day_convention": 0,
+        "settlement_days": 2,
+        "valuation_date": "2025-09-06"
+      }
+    }
+  ]
+}

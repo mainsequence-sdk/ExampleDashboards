@@ -7,9 +7,9 @@ from pydantic import BaseModel, Field, PrivateAttr
 from src.data_interface import APIDataNode, DateInfo
 from src.pricing_models.black_scholes import create_bsm_model
 from src.utils import to_ql_date
+from .json_codec import JSONMixin  # NEW
 
-
-class EuropeanOption(BaseModel):
+class EuropeanOption(BaseModel,JSONMixin):
     """European option priced with Black–Scholes–Merton."""
 
     underlying: str = Field(

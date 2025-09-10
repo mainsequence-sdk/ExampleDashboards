@@ -6,9 +6,10 @@ from pydantic import BaseModel, Field, PrivateAttr
 
 from src.pricing_models.fx_option_pricer import create_fx_garman_kohlhagen_model, get_fx_market_data
 from src.utils import to_ql_date
+from .json_codec import JSONMixin
 
 
-class VanillaFXOption(BaseModel):
+class VanillaFXOption(BaseModel,JSONMixin):
     """Vanilla FX option priced with Garman-Kohlhagen model."""
 
     currency_pair: str = Field(

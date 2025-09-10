@@ -1,14 +1,21 @@
 import datetime
-from typing import Optional
+from typing import Optional, Dict, Any
 
 import QuantLib as ql
 from pydantic import BaseModel, Field, PrivateAttr
 
 from src.pricing_models.bond_pricer import create_fixed_rate_bond
 from src.utils import to_ql_date
+from .json_codec import (
+    JSONMixin,
+    period_to_json, period_from_json,
+    daycount_to_json, daycount_from_json,
+    calendar_to_json, calendar_from_json,
+)
+from pydantic import BaseModel, Field, PrivateAttr, field_serializer, field_validator
 
 
-class FixedRateBond(BaseModel):
+class FixedRateBond(BaseModel,JSONMixin):
     """Plain-vanilla fixed-rate bond."""
 
     face_value: float = Field(
@@ -50,6 +57,35 @@ class FixedRateBond(BaseModel):
     model_config = {"arbitrary_types_allowed": True}
 
     _bond: Optional[ql.FixedRateBond] = PrivateAttr(default=None)
+
+    # ---------- JSON field serializers ----------
+    @field_serializer("coupon_frequency", when_used="json")
+    def _ser_coupon_frequency(self, v: ql.Period) -> str:
+        return period_to_json(v)
+
+    @field_serializer("day_count", when_used="json")
+    def _ser_day_count(self, v: ql.DayCounter) -> str:
+        return daycount_to_json(v)
+
+    @field_serializer("calendar", when_used="json")
+    def _ser_calendar(self, v: ql.Calendar) -> Dict[str, Any]:
+        return calendar_to_json(v)
+
+    # ---------- JSON field validators (decode) ----------
+    @field_validator("coupon_frequency", mode="before")
+    @classmethod
+    def _val_coupon_frequency(cls, v):
+        return period_from_json(v)
+
+    @field_validator("day_count", mode="before")
+    @classmethod
+    def _val_day_count(cls, v):
+        return daycount_from_json(v)
+
+    @field_validator("calendar", mode="before")
+    @classmethod
+    def _val_calendar(cls, v):
+        return calendar_from_json(v)
 
     def _setup_pricer(self) -> None:
         if self._bond is None:

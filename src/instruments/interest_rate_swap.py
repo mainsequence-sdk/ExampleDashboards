@@ -2,19 +2,27 @@ import datetime
 from typing import Optional, List, Dict, Any
 
 import QuantLib as ql
-from pydantic import BaseModel, Field, PrivateAttr
+from pydantic import BaseModel, Field, PrivateAttr, field_serializer, field_validator
 
 from src.data_interface import APIDataNode
 from src.pricing_models.swap_pricer import (price_vanilla_swap, get_swap_cashflows,
-                                            build_tiie_zero_curve_from_valmer,
                                             price_vanilla_swap_with_curve,make_ftiie_index,
-make_tiie_28d_index,price_ftiie_ois_with_curve
+price_ftiie_ois_with_curve
 
                                             )
+from src.pricing_models.indices import (build_tiie_zero_curve_from_valmer,make_tiie_28d_index)
 from src.utils import to_ql_date
+from .json_codec import (
+    JSONMixin,
+    period_to_json, period_from_json,
+    daycount_to_json, daycount_from_json,
+    ibor_to_json, ibor_from_json,
+)
 
 
-class InterestRateSwap(BaseModel):
+
+
+class InterestRateSwap(BaseModel,JSONMixin):
     """Plain-vanilla fixed-for-floating interest rate swap."""
 
     notional: float = Field(
@@ -57,6 +65,36 @@ class InterestRateSwap(BaseModel):
     model_config = {"arbitrary_types_allowed": True}
 
     _swap: Optional[ql.VanillaSwap] = PrivateAttr(default=None)
+
+    # ---------- JSON field serializers ----------
+    @field_serializer("fixed_leg_tenor", "float_leg_tenor", when_used="json")
+    def _ser_tenors(self, v: ql.Period, _info) -> str:
+        return period_to_json(v)
+
+    @field_serializer("fixed_leg_daycount", when_used="json")
+    def _ser_fixed_daycount(self, v: ql.DayCounter) -> str:
+        return daycount_to_json(v)
+
+    @field_serializer("float_leg_ibor_index", when_used="json")
+    def _ser_ibor(self, v: Optional[ql.IborIndex]) -> Optional[Dict[str, Any]]:
+        return ibor_to_json(v)
+
+    # ---------- JSON field validators (decode) ----------
+    @field_validator("fixed_leg_tenor", "float_leg_tenor", mode="before")
+    @classmethod
+    def _val_periods(cls, v):
+        return period_from_json(v)
+
+    @field_validator("fixed_leg_daycount", mode="before")
+    @classmethod
+    def _val_fixed_daycount(cls, v):
+        return daycount_from_json(v)
+
+    @field_validator("float_leg_ibor_index", mode="before")
+    @classmethod
+    def _val_ibor(cls, v):
+        # Rebuild a basic index shell (curve linking happens in pricing code).
+        return ibor_from_json(v)
 
     def _setup_pricer(self) -> None:
         if self._swap is None:
@@ -108,6 +146,16 @@ class TIIESwap(InterestRateSwap):
 
     model_config = {"arbitrary_types_allowed": True}
     _swap: Optional[ql.VanillaSwap] = PrivateAttr(default=None)
+
+    # Serializer/validator for the optional 'tenor'
+    @field_serializer("tenor", when_used="json")
+    def _ser_tenor(self, v: Optional[ql.Period]) -> Optional[str]:
+        return period_to_json(v)
+
+    @field_validator("tenor", mode="before")
+    @classmethod
+    def _val_tenor(cls, v):
+        return period_from_json(v)
 
     def _setup_pricer(self) -> None:
         if self._swap is not None:

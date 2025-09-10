@@ -170,3 +170,55 @@ def create_fixed_rate_bond(
     bond = ql.FixedRateBond(settlement_days, face, schedule, [coupon_rate], day_count)
     bond.setPricingEngine(ql.DiscountingBondEngine(discount_curve))
     return bond
+
+
+def create_floating_rate_bond(
+    calculation_date: ql.Date,
+    face: float,
+    issue_date: ql.Date,
+    maturity_date: ql.Date,
+    floating_rate_index: ql.IborIndex,
+    spread: float = 0.0,
+    coupon_frequency: ql.Period = None,
+    day_count: ql.DayCounter = None,
+    calendar: ql.Calendar = ql.TARGET(),
+    business_day_convention: int = ql.Following,
+    settlement_days: int = 2
+) -> ql.FloatingRateBond:
+    """Construct a floating rate bond and attach pricing engine."""
+    ql.Settings.instance().evaluationDate = calculation_date
+
+    # Build discount curve for pricing
+    discount_curve = build_discount_curve_from_bonds(calculation_date)
+
+    # Link the floating rate index to the discount curve
+    # Create a new index with the same characteristics but linked to our curve
+    index_with_curve = floating_rate_index.clone(discount_curve)
+
+    # Use index defaults if not specified
+    if coupon_frequency is None:
+        coupon_frequency = floating_rate_index.tenor()
+    if day_count is None:
+        day_count = floating_rate_index.dayCounter()
+
+    schedule = ql.Schedule(
+        issue_date, maturity_date, coupon_frequency, calendar,
+        business_day_convention, business_day_convention,
+        ql.DateGeneration.Forward, False
+    )
+
+    # Create floating rate bond with spread
+    bond = ql.FloatingRateBond(
+        settlement_days, face, schedule, 
+        index_with_curve, day_count, 
+        business_day_convention, settlement_days,
+        [1.0],  # gearings (multiplier for the index rate)
+        [spread],  # spreads
+        [],  # caps
+        [],  # floors
+        False,  # in arrears
+        100.0  # redemption
+    )
+
+    bond.setPricingEngine(ql.DiscountingBondEngine(discount_curve))
+    return bond

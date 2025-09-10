@@ -4,40 +4,8 @@ from src.utils import to_py_date,to_ql_date
 import datetime
 from typing import List, Dict, Any, Optional
 import matplotlib.pyplot as plt
+from src.pricing_models.indices import add_historical_fixings
 
-def add_historical_fixings(calculation_date: ql.Date, ibor_index: ql.IborIndex):
-    print("Fetching and adding historical fixings...")
-
-    end_date = to_py_date(calculation_date) - datetime.timedelta(days=1)
-    start_date = end_date - datetime.timedelta(days=365)
-
-    historical_fixings = APIDataNode.get_historical_fixings(
-        index_name=ibor_index.name(),
-        start_date=start_date,
-        end_date=end_date
-    )
-
-    if not historical_fixings:
-        print("No historical fixings found in the given date range.")
-        return
-
-    # --- NEW: keep only valid fixing dates for THIS index (Mexico calendar) and strictly in the past
-    valid_qld: list[ql.Date] = []
-    valid_rates: list[float] = []
-
-    for dt_py, rate in sorted(historical_fixings.items()):
-        qld = to_ql_date(dt_py)
-        if qld < calculation_date and ibor_index.isValidFixingDate(qld):
-            valid_qld.append(qld)
-            valid_rates.append(rate)
-
-    if not valid_qld:
-        print("No valid fixing dates for the index calendar; skipping addFixings.")
-        return
-
-    # --- NEW: allow overwriting if some dates already have a fixing
-    ibor_index.addFixings(valid_qld, valid_rates, True)
-    print(f"Successfully added {len(valid_qld)} fixings for {ibor_index.name()}.")
 
 
 def _coerce_to_ql_date(x, fallback: ql.Date) -> ql.Date:
@@ -61,46 +29,7 @@ def _coerce_to_ql_date(x, fallback: ql.Date) -> ql.Date:
         pass
     return fallback
 
-def build_tiie_zero_curve_from_valmer(_: ql.Date | None = None) -> ql.YieldTermStructureHandle:
-    market = APIDataNode.get_historical_data("tiie_zero_valmer", {"MXN": {}})
-    nodes  = market["curve_nodes"]
-    base_py = market["base_date"]           # Python date from CSV
-    base = to_ql_date(base_py)
 
-    cal = ql.Mexico() if hasattr(ql, "Mexico") else ql.TARGET()
-    dc  = ql.Actual360()
-
-    # Reference date is the CSV base_date; discount( base_date ) := 1.0
-    dates = [base]
-    discounts = [1.0]
-    seen = {base.serialNumber()}
-
-    for n in sorted(nodes, key=lambda n: int(n["days_to_maturity"])):
-        days = int(n["days_to_maturity"])
-        if days < 0:
-            continue
-        d=base_py+datetime.timedelta(days=days)
-        d=to_ql_date(d)
-
-        sn = d.serialNumber()
-        if sn in seen:
-            continue
-
-        z = n.get("zero", n.get("zero_rate", n.get("rate")))
-        z = float(z)
-        if z > 1.0:  # CSV percent -> decimal
-            z *= 0.01
-
-        T = dc.yearFraction(base, d)
-        df = 1.0 / (1.0 + z * T)   # Valmer zero is simple ACT/360
-
-        dates.append(d)
-        discounts.append(df)
-        seen.add(sn)
-
-    ts = ql.DiscountCurve(dates, discounts, dc, cal)
-    ts.enableExtrapolation()
-    return ql.YieldTermStructureHandle(ts)
 
 
 def make_ftiie_index(curve: ql.YieldTermStructureHandle,
@@ -112,52 +41,7 @@ def make_ftiie_index(curve: ql.YieldTermStructureHandle,
         ccy = ql.USDCurrency()  # label only
     return ql.OvernightIndex("F-TIIE", settlement_days, ccy, cal, ql.Actual360(), curve)
 
-def make_tiie_28d_index(
-    curve: ql.YieldTermStructureHandle,
-    settlement_days: int = 1,
-) -> ql.IborIndex:
-    """
-    Construct a minimal TIIE-28D IborIndex linked to `curve`.
 
-    Conventions used (standard for MXN TIIE 28D):
-      - Tenor: 28 days
-      - Settlement: T+1
-      - Calendar: Mexico (fallback TARGET if not available in your wheel)
-      - Business day convention: ModifiedFollowing
-      - End-of-month: False
-      - Day count: Actual/360
-      - Currency: MXN (fallback USD if MXN class not available; does not affect math)
-
-    Parameters
-    ----------
-    curve : ql.YieldTermStructureHandle
-        Forwarding (and, in your setup, discounting) curve to link to the index.
-    settlement_days : int
-        Fixing settlement lag in business days (default 1).
-
-    Returns
-    -------
-    ql.IborIndex
-        An index named "TIIE-28D" ready to use in swap construction.
-    """
-    # Calendar & currency (graceful fallbacks if your wheel lacks Mexico/MXN)
-    cal = ql.Mexico() if hasattr(ql, "Mexico") else ql.TARGET()
-    try:
-        ccy = ql.MXNCurrency()
-    except Exception:
-        ccy = ql.USDCurrency()  # label only; does not affect rates/discounting
-
-    return ql.IborIndex(
-        "TIIE-28D",
-        ql.Period("28D"),
-        settlement_days,  # T+1
-        ccy,
-        cal,
-        ql.ModifiedFollowing,  # BDC
-        False,  # EOM
-        ql.Actual360(),  # ACT/360
-        curve
-    )
 
 def build_yield_curve(calculation_date: ql.Date) -> ql.YieldTermStructureHandle:
     """

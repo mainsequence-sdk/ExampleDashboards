@@ -9,7 +9,8 @@ from src.pricing_models.knockout_fx_pricer import create_knockout_fx_option
 from src.utils import to_ql_date
 
 
-class KnockOutFXOption(BaseModel):
+from .json_codec import JSONMixin
+class KnockOutFXOption(BaseModel,JSONMixin):
     """
     Knock-out FX option - a path-dependent option that becomes worthless 
     if the underlying FX rate hits the barrier level during the option's life.
