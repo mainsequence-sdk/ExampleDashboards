@@ -22,6 +22,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
+
 # ---------- ensure examples/alm is importable ----------
 ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
@@ -32,13 +33,14 @@ from examples.alm.utils import (
     set_eval, to_py_date, load_swap_nodes, apply_bumps, build_curve_from_swap_nodes,
     price_all, portfolio_totals, id_meta, nodes_parallel_bump,
     compute_lcr, compute_nsfr, build_liquidity_ladder,
-    duration_gap_and_eve, nii_12m_shock,
+    duration_gap_and_eve, nii_12m_shock,get_bumped_position,
     build_curves_for_ui  # <-- add this
 )
 from examples.alm.ux_utils import (
     register_theme, plot_par_yield_curve, plot_liquidity_ladder,
     table_kpis, plot_eve_bars_compare
 )
+from src.instruments.position import Position
 
 # ---------- Streamlit page ----------
 st.set_page_config(page_title="ALM Cockpit", layout="wide")
@@ -191,6 +193,10 @@ nii_days = int(cfg.get("alm_assumptions", {}).get("nii_horizon_days", 365))
 hqla = float(cfg.get("alm_assumptions", {}).get("hqla_amount", 0.0))
 inflow_cap = float(cfg.get("alm_assumptions", {}).get("lcr_inflow_cap", 0.75))
 lcr_days = st.sidebar.slider("LCR horizon (days)", min_value=10, max_value=90, value=30, step=5)
+position=Position.from_json_dict(cfg["position"])
+
+
+
 
 st.sidebar.info("**units** in the position are multipliers (# of identical positions).")
 
@@ -203,18 +209,21 @@ ql_today = set_eval(val_date)
 ts_base, ts_bump, nodes_base, nodes_final, index_hint = build_curves_for_ui(
      cfg, ql_today, tenor_bumps, par_bp
  )
+
+bumped_position=get_bumped_position(position=position,bump_curve=ts_bump)
+
 cutoff = to_py_date(ql_today) + dt.timedelta(days=int(cfg["valuation"].get("cashflow_cutoff_days", 3 * 365)))
-npv0, npv1, cf0, cf1, units_by_id = price_all(ts_base, ts_bump, ql_today, cfg, cutoff)
-totals = portfolio_totals(npv0, npv1, units_by_id)
-meta = id_meta(cfg)
+npv0, npv1, cf0, cf1, units = price_all( position,bumped_position, cutoff)
+totals = portfolio_totals(npv0, npv1,units)
+meta = id_meta(position)
 
 # ALM analytics (base & bumped)
 base_for_risk = ts_base if is_mxn else nodes_base
 
 lcr_base = compute_lcr(cf0, meta, to_py_date(ql_today), hqla, horizon_days=lcr_days, inflow_cap=inflow_cap)
 liq_base = build_liquidity_ladder(cf0, to_py_date(ql_today), months=liq_months)
-dur_base = duration_gap_and_eve(cfg, base_for_risk, ql_today, bump_bp=1.0, eve_bp=float(eve_bp))
-nii_base = nii_12m_shock(cfg, base_for_risk, ql_today, shock_bp=float(nii_bp), horizon_days=nii_days)
+dur_base = duration_gap_and_eve(npv0, npv1, eve_bp=float(eve_bp),units=units)
+nii_base = nii_12m_shock(cf0, cf1, ql_today, shock_bp=float(nii_bp), horizon_days=nii_days)
 nsfr_vals = compute_nsfr(meta)
 
 bump_for_risk = ts_bump if is_mxn else nodes_final
@@ -222,8 +231,8 @@ bump_for_risk = ts_bump if is_mxn else nodes_final
 
 lcr_bump = compute_lcr(cf1, meta, to_py_date(ql_today), hqla, horizon_days=lcr_days, inflow_cap=inflow_cap)
 liq_bump = build_liquidity_ladder(cf1, to_py_date(ql_today), months=liq_months)
-dur_bump = duration_gap_and_eve(cfg, bump_for_risk, ql_today, bump_bp=1.0, eve_bp=float(eve_bp))
-nii_bump = nii_12m_shock(cfg, bump_for_risk, ql_today, shock_bp=float(nii_bp), horizon_days=nii_days)
+dur_bump =  duration_gap_and_eve(npv0, npv1, eve_bp=float(eve_bp),units=units)
+nii_bump = nii_12m_shock(cf0, cf1, ql_today, shock_bp=float(nii_bp), horizon_days=nii_days)
 
 # =========================================
 #              LAYOUT/SECTIONS

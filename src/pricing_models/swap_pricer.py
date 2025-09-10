@@ -223,7 +223,7 @@ def price_vanilla_swap(calculation_date: ql.Date, notional: float, start_date: q
     return swap
 
 
-def get_swap_cashflows(swap: ql.VanillaSwap) -> Dict[str, List[Dict[str, Any]]]:
+def get_swap_cashflows(swap) -> Dict[str, List[Dict[str, Any]]]:
     """
     Analyzes the cashflows of a swap's fixed and floating legs.
     """

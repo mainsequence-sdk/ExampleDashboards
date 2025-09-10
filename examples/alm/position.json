@@ -4,9 +4,11 @@
     "currency": "MXN",
     "cashflow_cutoff_days": 1460
   },
-
-  "curve_bumps_bp": { "28D": 0.0, "1Y": 25.0, "5Y": 50.0 },
-
+  "curve_bumps_bp": {
+    "28D": 0.0,
+    "1Y": 25.0,
+    "5Y": 50.0
+  },
   "alm_assumptions": {
     "currency_symbol": "MXN$ ",
     "curve_source": "TIIE_VALMER",
@@ -14,94 +16,38 @@
     "hqla_amount": 800000000.0,
     "lcr_inflow_cap": 0.75,
     "nii_horizon_days": 365,
-    "repricing_buckets_days": [28, 84, 182, 365, 730, 1825, 36500]
+    "repricing_buckets_days": [
+      28,
+      84,
+      182,
+      365,
+      730,
+      1825,
+      36500
+    ]
   },
+  "position": {
+    "lines": [
+      {
+        "instrument_type": "TIIESwap",
+        "units": 1.0,
+        "instrument": {
+          "notional": 100000000.0,
+          "start_date": "2025-09-06",
+          "maturity_date": "2025-09-06",
+          "fixed_rate": 0.07800982,
+          "fixed_leg_tenor": "28D",
+          "fixed_leg_convention": 1,
+          "fixed_leg_daycount": "Actual360",
+          "float_leg_tenor": "28D",
+          "float_leg_spread": 0.0,
+          "float_leg_ibor_index": null,
+          "valuation_date": "2025-09-06",
+          "tenor": "364W"
+        }
+      }
 
-  "bonds": [
-    {
-      "id": "MXCorp_Float_TIIE_3Y",
-      "side": "asset",
-      "kind": "float",
-      "units": 2.0,
-      "notional": 120000000.0,
-      "tenor": "3Y",
-      "float_tenor": "28D",
-      "spread": 0.0125,
-      "index": "MXN-TIIE-28D",
-      "day_count": "ACT/360",
-      "calendar": "MX",
-      "bdc": "ModifiedFollowing",
-      "settlement_days": 2,
-      "nsfr_rsf_weight": 0.85,
-      "lcr_inflow_rate": 0.00
-    },
-    {
-      "id": "MXCorp_Fixed_5Y",
-      "side": "asset",
-      "kind": "fixed",
-      "units": 1.0,
-      "notional": 150000000.0,
-      "tenor": "5Y",
-      "coupon": 0.1025,
-      "coupon_frequency": "182D",
-      "day_count": "30/360",
-      "calendar": "MX",
-      "bdc": "ModifiedFollowing",
-      "settlement_days": 2,
-      "nsfr_rsf_weight": 0.85,
-      "lcr_inflow_rate": 0.00
-    },
 
-    {
-      "id": "Retail_Demand_Dep_1Y",
-      "side": "liability",
-      "kind": "float",
-      "units": 1.0,
-      "notional": 250000000.0,
-      "tenor": "1Y",
-      "float_tenor": "28D",
-      "spread": -0.0150,
-      "index": "MXN-TIIE-28D",
-      "day_count": "ACT/360",
-      "calendar": "MX",
-      "bdc": "ModifiedFollowing",
-      "settlement_days": 0,
-      "nsfr_asf_weight": 0.95,
-      "lcr_outflow_rate": 0.05
-    },
-    {
-      "id": "Senior_CEBURE_3Y",
-      "side": "liability",
-      "kind": "fixed",
-      "units": 1.0,
-      "notional": 200000000.0,
-      "tenor": "3Y",
-      "coupon": 0.0890,
-      "coupon_frequency": "182D",
-      "day_count": "30/360",
-      "calendar": "MX",
-      "bdc": "ModifiedFollowing",
-      "settlement_days": 2,
-      "nsfr_asf_weight": 1.00,
-      "lcr_outflow_rate": 0.00
-    }
-  ],
-
-  "swaps": [
-    {
-      "id": "TIIE28_PAYFIX_2Y",
-      "side": "asset",
-      "units": 1.0,
-      "notional": 200000000.0,
-      "start_in": "2D",
-      "tenor": "2Y",
-      "fixed_rate": 0.0780,
-      "fixed_leg_tenor": "28D",
-      "fixed_leg_convention": "Unadjusted",
-      "fixed_leg_daycount": "ACT/360",
-      "float_leg_tenor": "28D",
-      "float_leg_spread": 0.0000,
-      "index": "MXN-TIIE-28D"
-    }
-  ]
+    ]
+  }
 }

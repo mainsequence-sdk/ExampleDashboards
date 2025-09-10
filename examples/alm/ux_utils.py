@@ -7,8 +7,8 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import plotly.io as pio
 import QuantLib as ql
-from src.pricing_models.swap_pricer import make_tiie_28d_index,price_vanilla_swap_with_curve
-
+from src.pricing_models.indices import make_tiie_28d_index
+from src.pricing_models.swap_pricer import price_vanilla_swap_with_curve
 
 # -------- Plot theme (consistent everywhere) --------
 

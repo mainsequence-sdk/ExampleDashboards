@@ -5,7 +5,7 @@ import json
 from typing import Any, Dict, Optional, Union
 import QuantLib as ql
 from src.pricing_models.indices import get_index as _index_by_name
-
+import hashlib
 # ----------------------------- ql.Period -------------------------------------
 
 _UNITS_TO_SHORT = {
@@ -235,3 +235,43 @@ class JSONMixin:
         if isinstance(payload, (bytes, bytearray)):
             payload = payload.decode("utf-8")
         return cls.from_json_dict(json.loads(payload))
+
+
+    def to_canonical_json(self) -> str:
+        """
+        Canonical JSON used for hashing:
+        - keys sorted
+        - no extra whitespace
+        - UTF-8 friendly (no ASCII escaping)
+        """
+        data = self.to_json_dict()
+        return json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+    def content_hash(self, algorithm: str = "sha256") -> str:
+        """
+        Hash of the canonical JSON representation.
+        `algorithm` must be a hashlib-supported name (e.g., 'sha256', 'sha1', 'md5', 'blake2b').
+        """
+        s = self.to_canonical_json().encode("utf-8")
+        h = hashlib.new(algorithm)
+        h.update(s)
+        return h.hexdigest()
+
+    @classmethod
+    def hash_payload(cls, payload: Union[str, bytes, Dict[str, Any]], algorithm: str = "sha256") -> str:
+        """
+        Hash an arbitrary JSON payload (str/bytes/dict) using the same canonicalization.
+        Useful if you have serialized JSON already and want the same digest.
+        """
+        if isinstance(payload, (bytes, bytearray)):
+            payload = payload.decode("utf-8")
+        if isinstance(payload, str):
+            obj = json.loads(payload)
+        elif isinstance(payload, dict):
+            obj = payload
+        else:
+            raise TypeError(f"Unsupported payload type: {type(payload).__name__}")
+        s = json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+        h = hashlib.new(algorithm)
+        h.update(s)
+        return h.hexdigest()

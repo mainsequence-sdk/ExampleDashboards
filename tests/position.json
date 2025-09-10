@@ -39,6 +39,43 @@
         "settlement_days": 2,
         "valuation_date": "2025-09-06"
       }
+    },
+        {
+      "instrument_type": "FixedRateBond",
+      "units": 1.0,
+      "instrument": {
+        "face_value": 1000000.0,
+        "coupon_rate": 0.08,
+        "issue_date": "2025-09-06",
+        "maturity_date": "2030-09-06",
+        "coupon_frequency": "6M",
+        "day_count": "Actual360",
+        "calendar": {
+          "name": "TARGET"
+        },
+        "business_day_convention": 0,
+        "settlement_days": 2,
+        "valuation_date": "2025-09-06"
+      }
+    },
+
+    {
+      "instrument_type": "FixedRateBond",
+      "units": -1.0,
+      "instrument": {
+        "face_value": 1000000.0,
+        "coupon_rate": 0.0,
+        "issue_date": "2025-09-06",
+        "maturity_date": "2026-09-06",
+        "coupon_frequency": "1Y",
+        "day_count": "Actual360",
+        "calendar": {
+          "name": "TARGET"
+        },
+        "business_day_convention": 0,
+        "settlement_days": 2,
+        "valuation_date": "2025-09-06"
+      }
     }
   ]
 }

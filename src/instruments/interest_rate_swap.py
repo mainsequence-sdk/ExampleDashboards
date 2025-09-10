@@ -11,15 +11,14 @@ price_ftiie_ois_with_curve
 
                                             )
 from src.pricing_models.indices import (build_tiie_zero_curve_from_valmer,get_index)
-from src.utils import to_ql_date
+from src.utils import to_ql_date,to_py_date
 from .json_codec import (
     JSONMixin,
     period_to_json, period_from_json,
     daycount_to_json, daycount_from_json,
     ibor_to_json, ibor_from_json,
 )
-
-
+import pandas as pd
 
 
 class InterestRateSwap(BaseModel,JSONMixin):
@@ -96,6 +95,8 @@ class InterestRateSwap(BaseModel,JSONMixin):
         # Rebuild a basic index shell (curve linking happens in pricing code).
         return ibor_from_json(v)
 
+
+
     def _setup_pricer(self) -> None:
         if self._swap is None:
             ql_val = to_ql_date(self.valuation_date)
@@ -121,6 +122,17 @@ class InterestRateSwap(BaseModel,JSONMixin):
     def get_cashflows(self) -> Dict[str, List[Dict[str, Any]]]:
         self._setup_pricer()
         return get_swap_cashflows(self._swap)
+    def get_net_cashflows(self)->pd.Series:
+        cashflows=self.get_cashflows()
+        fixed_df=pd.DataFrame(cashflows["fixed"]).set_index("payment_date")
+        float_df = pd.DataFrame(cashflows["floating"]).set_index("payment_date")
+        joint_index=fixed_df.index.union(float_df.index)
+        fixed_df=fixed_df.reindex(joint_index).fillna(0.0)
+        float_df=float_df.reindex(joint_index).fillna(0.0)
+
+        net_cashflow=fixed_df["amount"]-float_df["amount"]
+        net_cashflow.name="net_cashflow"
+        return net_cashflow
 
 
 class TIIESwap(InterestRateSwap):
@@ -157,19 +169,17 @@ class TIIESwap(InterestRateSwap):
     def _val_tenor(cls, v):
         return period_from_json(v)
 
-    def _setup_pricer(self) -> None:
-        if self._swap is not None:
-            return
-
+    def _build_swap(self, curve: ql.YieldTermStructure) -> None:
+        """
+        Private helper method to construct the QuantLib swap object.
+        This contains the common logic previously duplicated in _setup_pricer and reset_curve.
+        """
         ql_val = to_ql_date(self.valuation_date)
         ql.Settings.instance().evaluationDate = ql_val
         ql.Settings.instance().includeReferenceDateEvents = False
         ql.Settings.instance().enforceTodaysHistoricFixings = False
 
-        # 1) Build TIIE curve from CSV base_date (no re-anchoring to 'today')
-        curve = build_tiie_zero_curve_from_valmer(None)
-
-        # 2) TIIE-28D index on that curve
+        # 1) TIIE-28D index on the provided curve
         tiie = get_index(
             "TIIE", tenor="28D",
             forwarding_curve=curve,
@@ -178,17 +188,17 @@ class TIIESwap(InterestRateSwap):
         )
         cal = tiie.fixingCalendar()
 
-        # 3) Effective start = T+1 FROM TRADE (your start_date), not valueDate()
+        # 2) Effective start = T+1 FROM TRADE (your start_date), not valueDate()
         trade = to_ql_date(self.start_date)
-        eff_start = cal.adjust(trade, ql.Following)  # e.g., 2025-09-06 -> 2025-09-08
+        eff_start = cal.adjust(trade, ql.Following)
 
-        # 4) Effective end
+        # 3) Effective end
         if self.tenor is not None:
             eff_end = cal.advance(eff_start, self.tenor)
         else:
             eff_end = to_ql_date(self.maturity_date)
 
-        # 5) Price vanilla IRS using that schedule and the static curve
+        # 4) Price vanilla IRS using the schedule and the provided curve
         self._swap = price_vanilla_swap_with_curve(
             calculation_date=ql_val,
             notional=self.notional,
@@ -203,3 +213,20 @@ class TIIESwap(InterestRateSwap):
             ibor_index=tiie,
             curve=curve,
         )
+
+    def reset_curve(self, curve: ql.YieldTermStructure) -> None:
+        """Re-prices the swap using a new, user-provided curve."""
+        # Call the common swap construction logic with the new curve.
+        self._build_swap(curve)
+
+    def _setup_pricer(self) -> None:
+        """Sets up the initial pricer using the default Valmer curve."""
+        if self._swap is not None:
+            return
+
+        # Build the default TIIE curve.
+        default_curve = build_tiie_zero_curve_from_valmer(None)
+
+        # Call the common swap construction logic.
+        self._build_swap(default_curve)
+
