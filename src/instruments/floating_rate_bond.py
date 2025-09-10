@@ -4,7 +4,10 @@ from typing import Optional, Dict, Any
 import QuantLib as ql
 from pydantic import BaseModel, Field, PrivateAttr, field_serializer, field_validator
 
-from src.pricing_models.bond_pricer import create_floating_rate_bond
+from src.pricing_models.bond_pricer import (
+    create_floating_rate_bond,
+    create_floating_rate_bond_with_curve,
+)
 from src.utils import to_ql_date
 from .json_codec import (
     JSONMixin,
@@ -101,30 +104,50 @@ class FloatingRateBond(BaseModel, JSONMixin):
 
     def _setup_pricer(self) -> None:
         if self._bond is None:
-            from src.pricing_models.indices import add_historical_fixings
-
-
-
             ql_calc_date = to_ql_date(self.valuation_date)
-            # add_historical_fixings(ql_calc_date, self.floating_rate_index)
-            # Mirror TIIESwap behavior so “today” is forecast, not required as history
+            # Align swap behavior: forecast “today”, no historic fixing required
             ql.Settings.instance().evaluationDate = ql_calc_date
             ql.Settings.instance().includeReferenceDateEvents = False
             ql.Settings.instance().enforceTodaysHistoricFixings = False
 
-            self._bond = create_floating_rate_bond(
-                calculation_date=ql_calc_date,
-                face=self.face_value,
-                issue_date=to_ql_date(self.issue_date),
-                maturity_date=to_ql_date(self.maturity_date),
-                floating_rate_index=self.floating_rate_index,
-                spread=self.spread,
-                coupon_frequency=self.coupon_frequency,
-                day_count=self.day_count,
-                calendar=self.calendar,
-                business_day_convention=self.business_day_convention,
-                settlement_days=self.settlement_days
-            )
+            # If the index is already linked to a forwarding curve, price like the swap
+            try:
+                curve = self.floating_rate_index.forwardingTermStructure()
+            except Exception:
+                curve = ql.YieldTermStructureHandle()
+
+            if curve and not curve.empty():
+                self._bond = create_floating_rate_bond_with_curve(
+                    calculation_date=ql_calc_date,
+                    face=self.face_value,
+                    issue_date=to_ql_date(self.issue_date),
+                    maturity_date=to_ql_date(self.maturity_date),
+                    floating_rate_index=self.floating_rate_index,
+                    spread=self.spread,
+                    coupon_frequency=self.coupon_frequency,
+                    day_count=self.day_count,
+                    calendar=self.calendar,
+                    business_day_convention=self.business_day_convention,
+                    settlement_days=self.settlement_days,
+                    curve=curve,
+                    seed_past_fixings_from_curve=True,
+                )
+            else:
+                # Legacy path (no forwarding curve on the index) — your existing behavior
+                self._bond = create_floating_rate_bond(
+                    calculation_date=ql_calc_date,
+                    face=self.face_value,
+                    issue_date=to_ql_date(self.issue_date),
+                    maturity_date=to_ql_date(self.maturity_date),
+                    floating_rate_index=self.floating_rate_index,
+                    spread=self.spread,
+                    coupon_frequency=self.coupon_frequency,
+                    day_count=self.day_count,
+                    calendar=self.calendar,
+                    business_day_convention=self.business_day_convention,
+                    settlement_days=self.settlement_days
+                )
+
 
     def price(self) -> float:
         self._setup_pricer()

@@ -41,6 +41,7 @@ import re
 from typing import Callable, Dict, Optional, Tuple
 
 import QuantLib as ql
+from functools import lru_cache
 
 
 # ----------------------------- Normalization helpers ----------------------------- #
@@ -101,6 +102,19 @@ _ALIASES: Dict[str, str] = {
     "ESTER": "ESTR",
     "E_STR": "ESTR",
 }
+_ALIASES.update({
+    "TIIE28D": "TIIE_28D",
+    "TIIE-28D": "TIIE_28D",
+    "TIIE91D": "TIIE_91D",
+    "TIIE-91D": "TIIE_91D",
+    "MXN_TIIE": "TIIE",
+})
+
+@lru_cache(maxsize=1)
+def _default_tiie_curve() -> ql.YieldTermStructureHandle:
+    # Use your own builder; cached so we don’t rebuild from CSV every call.
+    return build_tiie_zero_curve_from_valmer(None)
+
 
 def register_index(name: str, builder: Callable[[ql.YieldTermStructureHandle], ql.Index]) -> None:
     """
@@ -153,7 +167,15 @@ def _overnight_simple_builder(ql_class_name: str) -> Callable[[ql.YieldTermStruc
     return _b
 
 
-
+def _tiie_registry_builder(tenor: str) -> Callable[[ql.YieldTermStructureHandle], ql.Index]:
+    def _b(curve: ql.YieldTermStructureHandle) -> ql.Index:
+        # Honor a provided curve; otherwise fall back to the cached Valmer curve.
+        try:
+            use_curve = curve if (curve is not None and not curve.empty()) else _default_tiie_curve()
+        except Exception:
+            use_curve = _default_tiie_curve()
+        return make_tiie_index(use_curve, tenor)
+    return _b
 
 # Pre-register common overnight indices and well-known families
 def _bootstrap_registry() -> None:
@@ -184,11 +206,11 @@ def _bootstrap_registry() -> None:
         register_index(f"LIBOR_{c}", _libor_builder(c, "3M"))
 
     # # TIIE defaults to 28 days; also register common 91D
-    # register_index("TIIE_28D", _tiie_builder("28D"))
-    # register_index("TIIE_28",  _tiie_builder("28D"))
-    # register_index("TIIE_91D", _tiie_builder("91D"))
-    # register_index("TIIE_91",  _tiie_builder("91D"))
-    # register_index("TIIE",     _tiie_builder("28D"))
+    register_index("TIIE_28D", _tiie_registry_builder("28D"))
+    register_index("TIIE_28",  _tiie_registry_builder("28D"))
+    register_index("TIIE_91D", _tiie_registry_builder("91D"))
+    register_index("TIIE_91",  _tiie_registry_builder("91D"))
+    register_index("TIIE",     _tiie_registry_builder("28D"))
 
 
 _bootstrap_registry()
@@ -277,52 +299,49 @@ def build_tiie_zero_curve_from_valmer(_: ql.Date | None = None) -> ql.YieldTermS
     ts.enableExtrapolation()
     return ql.YieldTermStructureHandle(ts)
 
-def make_tiie_28d_index(
+def make_tiie_index(
     curve: ql.YieldTermStructureHandle,
+    tenor: str = "28D",
     settlement_days: int = 1,
 ) -> ql.IborIndex:
     """
-    Construct a minimal TIIE-28D IborIndex linked to `curve`.
-
-    Conventions used (standard for MXN TIIE 28D):
-      - Tenor: 28 days
+    Construct a TIIE IborIndex linked to `curve` with a given day-based tenor (e.g., '28D', '91D').
+    Conventions (MXN TIIE standard):
       - Settlement: T+1
-      - Calendar: Mexico (fallback TARGET if not available in your wheel)
-      - Business day convention: ModifiedFollowing
-      - End-of-month: False
+      - Calendar: Mexico (TARGET fallback)
+      - BDC: ModifiedFollowing
+      - EOM: False
       - Day count: Actual/360
-      - Currency: MXN (fallback USD if MXN class not available; does not affect math)
-
-    Parameters
-    ----------
-    curve : ql.YieldTermStructureHandle
-        Forwarding (and, in your setup, discounting) curve to link to the index.
-    settlement_days : int
-        Fixing settlement lag in business days (default 1).
-
-    Returns
-    -------
-    ql.IborIndex
-        An index named "TIIE-28D" ready to use in swap construction.
+      - Name: 'TIIE-<tenor>' (e.g., TIIE-28D)
     """
-    # Calendar & currency (graceful fallbacks if your wheel lacks Mexico/MXN)
+    tenor = _normalize_tenor(tenor or "28D")
+    if tenor in {"ON", "SN", "TN"}:
+        raise ValueError("TIIE does not support overnight/SN/TN tenors; use a fixed-day tenor like '28D' or '91D'.")
+
     cal = ql.Mexico() if hasattr(ql, "Mexico") else ql.TARGET()
     try:
         ccy = ql.MXNCurrency()
     except Exception:
-        ccy = ql.USDCurrency()  # label only; does not affect rates/discounting
+        ccy = ql.USDCurrency()  # label only; doesn’t affect pricing math
 
     return ql.IborIndex(
-        "TIIE-28D",
-        ql.Period("28D"),
-        settlement_days,  # T+1
+        f"TIIE-{tenor}",
+        ql.Period(tenor),
+        settlement_days,
         ccy,
         cal,
-        ql.ModifiedFollowing,  # BDC
-        False,  # EOM
-        ql.Actual360(),  # ACT/360
+        ql.ModifiedFollowing,
+        False,                # end-of-month
+        ql.Actual360(),
         curve
     )
+
+def make_tiie_28d_index(
+    curve: ql.YieldTermStructureHandle,
+    settlement_days: int = 1,
+) -> ql.IborIndex:
+    # Back-compat shim
+    return make_tiie_index(curve, "28D", settlement_days)
 
 def _apply_alias(key: str) -> str:
     return _ALIASES.get(key, key)
@@ -339,7 +358,10 @@ def get_index(
     name: str,
     *,
     tenor: Optional[str] = None,
-    forwarding_curve: Optional[ql.YieldTermStructureHandle] = None
+    forwarding_curve: Optional[ql.YieldTermStructureHandle] = None,
+        calculation_date: Optional[ql.Date] = None,
+        hydrate_fixings: bool = False,
+        settlement_days: Optional[int] = None
 ) -> ql.Index:
     """
     Return a QuantLib index instance based on a human-friendly name.
@@ -384,8 +406,22 @@ def get_index(
     # 2) TIIE
     if family in {"TIIE", "MXN", "MXN_TIIE"} or "TIIE" in rest:
         t = _normalize_tenor(tenor) if tenor else _find_tenor_in_tokens((family,) + rest) or "28D"
-        curve=build_tiie_zero_curve_from_valmer()
-        return make_tiie_28d_index(curve)
+
+        # Use provided curve if present; otherwise cached Valmer curve
+        use_curve = forwarding_curve
+        try:
+            if use_curve is None or use_curve.empty():
+                use_curve = _default_tiie_curve()
+        except Exception:
+            use_curve = _default_tiie_curve()
+
+        idx = make_tiie_index(use_curve, t, settlement_days or 1)
+
+        # Optional fixings hydration via this module (keeps everything index-related here)
+        if hydrate_fixings and calculation_date is not None and isinstance(idx, ql.IborIndex):
+            add_historical_fixings(calculation_date, idx)
+
+        return idx
 
     # 3) <CCY>_LIBOR_<tenor> or LIBOR_<CCY>[_<tenor>]
     if family == "LIBOR" and rest:

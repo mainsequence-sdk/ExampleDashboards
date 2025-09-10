@@ -10,7 +10,7 @@ from src.pricing_models.swap_pricer import (price_vanilla_swap, get_swap_cashflo
 price_ftiie_ois_with_curve
 
                                             )
-from src.pricing_models.indices import (build_tiie_zero_curve_from_valmer,make_tiie_28d_index)
+from src.pricing_models.indices import (build_tiie_zero_curve_from_valmer,get_index)
 from src.utils import to_ql_date
 from .json_codec import (
     JSONMixin,
@@ -170,7 +170,12 @@ class TIIESwap(InterestRateSwap):
         curve = build_tiie_zero_curve_from_valmer(None)
 
         # 2) TIIE-28D index on that curve
-        tiie = make_tiie_28d_index(curve)
+        tiie = get_index(
+            "TIIE", tenor="28D",
+            forwarding_curve=curve,
+            calculation_date=ql_val,
+            hydrate_fixings=True
+        )
         cal = tiie.fixingCalendar()
 
         # 3) Effective start = T+1 FROM TRADE (your start_date), not valueDate()
