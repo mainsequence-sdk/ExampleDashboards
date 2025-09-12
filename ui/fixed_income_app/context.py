@@ -1,4 +1,4 @@
-# alm_dashboard_base/core/context.py
+# examples/alm_app/context.py
 from __future__ import annotations
 
 import json
@@ -9,12 +9,9 @@ from typing import Any, Dict, Tuple
 
 import streamlit as st
 import QuantLib as ql
+import pandas as pd
 
-# Your existing utilities / components
-
-from ui.curves.bumping import build_curves_for_ui as build_bumped_curves, KEYRATE_GRID_TIIE, BumpSpec
-from ui.components.curve_bump import curve_bump_controls
-from ui.components.npv_table import st_position_npv_table_paginated
+from ui.curves.bumping import build_curves_for_ui as build_bumped_curves, BumpSpec
 from src.instruments.position import Position
 
 # ---------- cacheable helpers ----------
@@ -27,9 +24,6 @@ def qld(d: dt.date) -> ql.Date:
     return ql.Date(d.day, d.month, d.year)
 
 # ---------- portfolio stats ----------
-import pandas as pd
-import numpy as np
-
 def position_total_npv(position: Position) -> float:
     return float(sum(float(line.units) * float(line.instrument.price()) for line in position.lines))
 
@@ -99,29 +93,24 @@ class AppContext:
     bumped_position: Position
     carry_cutoff: dt.date
 
-def build_context(config_path: str | Path, spec: BumpSpec | None = None) -> Tuple[AppContext, BumpSpec]:
+def build_context(config_path: str | Path | None = None) -> tuple[AppContext, BumpSpec]:
+    """Domain-specific; the scaffold calls this via a small wrapper (below)."""
+    from ui.curves.bumping import KEYRATE_GRID_TIIE  # imported for side effects in views
     cfg = read_json(config_path)
 
     val_date = dt.date.fromisoformat(cfg["valuation"]["valuation_date"])
     currency_symbol = cfg.get("alm_assumptions", {}).get("currency_symbol", "USD$ ")
 
-    # First pass (no bumps) just to discover index/nodes (UI-free)
+    # First pass (no bumps) to discover index/nodes (UI-free)
     spec0 = BumpSpec(keyrate_bp=cfg.get("curve_bumps_bp", {}), parallel_bp=0.0)
     ts_base0, ts_bump0, nodes_base0, nodes_bump0, index_hint = build_bumped_curves(qld(val_date), spec0)
 
-    # Final spec:
-    #  1) explicit argument wins,
-    #  2) otherwise whatever the curve page stored in session,
-    #  3) otherwise defaults from the config file.
-    if spec is None:
-        ss = st.session_state.get("curve_bump_spec")
-        if isinstance(ss, dict):
-            spec = BumpSpec(
-                keyrate_bp=ss.get("keyrate_bp", {}),
-                parallel_bp=float(ss.get("parallel_bp", 0.0)),
-            )
-        else:
-            spec = spec0
+    # Final spec: explicit session wins, else defaults from the config file
+    ss = st.session_state.get("curve_bump_spec")
+    spec = BumpSpec(
+        keyrate_bp=(ss or {}).get("keyrate_bp", cfg.get("curve_bumps_bp", {})),
+        parallel_bp=float((ss or {}).get("parallel_bp", 0.0)),
+    )
 
     # Curves for the chosen spec
     ts_base, ts_bump, nodes_base, nodes_bump, _ = build_bumped_curves(qld(val_date), spec)
@@ -145,3 +134,10 @@ def build_context(config_path: str | Path, spec: BumpSpec | None = None) -> Tupl
         position=position, bumped_position=bumped_position, carry_cutoff=carry_cutoff
     )
     return ctx, spec
+
+# The scaffold expects build_context(session_state) -> ctx.
+# We wrap our build_context(file) so the example can keep session-driven behavior.
+def build_context_for_scaffold(session_state) -> AppContext:
+    cfg_path = session_state.get("cfg_path")
+    ctx, _ = build_context(cfg_path)
+    return ctx

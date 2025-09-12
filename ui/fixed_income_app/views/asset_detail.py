@@ -1,22 +1,20 @@
-# ui/dashboard_base/pages/asset_detail.py
+# examples/alm_app/views/asset_detail.py
 from __future__ import annotations
 import streamlit as st
-from ui.dashboard_base.core.registry import register_page
-from ui.dashboard_base.core.context import AppContext
+from mainsequence.dashboards.streamlit.core.registry import register_page
+from ui.fixed_income_app.context import AppContext
 
-@register_page("asset_detail", "Asset Detail",visible=False)
+@register_page("asset_detail", "Asset Detail", visible=False, has_sidebar=False)
 def render(ctx: AppContext):
     qp = st.query_params
     asset_id = qp.get("asset_id", None)
     if isinstance(asset_id, list):
         asset_id = asset_id[0] if asset_id else None
 
-    # Hard gate: only reachable via Details link
     if not asset_id:
         st.info("Asset Detail is available only from the Positions table (Details link).")
         if st.button("← Back to Curve, Stats & Positions"):
-            st.query_params.clear()
-            st.rerun()
+            st.query_params.clear(); st.rerun()
         st.stop()
 
     # Locate the instrument by its content_hash
@@ -25,8 +23,7 @@ def render(ctx: AppContext):
     if line is None:
         st.error(f"Asset '{asset_id}' not found in the current position.")
         if st.button("← Back"):
-            st.query_params.clear()
-            st.rerun()
+            st.query_params.clear(); st.rerun()
         st.stop()
 
     # Compute base / bumped NPVs
@@ -50,7 +47,6 @@ def render(ctx: AppContext):
 
     st.divider()
     st.write("**Instrument summary**")
-    # Show a concise set of fields, defensively
     st.json({
         "instrument_type": getattr(line.instrument, "instrument_type", type(line.instrument).__name__),
         "issue_date": getattr(line.instrument, "issue_date", None),
@@ -62,5 +58,4 @@ def render(ctx: AppContext):
 
     st.divider()
     if st.button("← Back to Curve, Stats & Positions", key="asset_back_bottom"):
-        st.query_params.clear()
-        st.rerun()
+        st.query_params.clear(); st.rerun()

@@ -1,8 +1,7 @@
-# ui.dashboard_base/pages/curve_and_positions.py
 from __future__ import annotations
 import streamlit as st
-from ui.dashboard_base.core.registry import register_page
-from ui.dashboard_base.core.context import AppContext, portfolio_stats
+from mainsequence.dashboards.streamlit.core.registry import register_page
+from ui.fixed_income_app.context import AppContext, portfolio_stats
 from ui.components.npv_table import st_position_npv_table_paginated
 from ui.components.curve_bump import curve_bump_controls
 from ui.curves.bumping import KEYRATE_GRID_TIIE
@@ -17,19 +16,17 @@ def _fmt_ccy(x: float, symbol: str, signed: bool = False) -> str:
         return "—"
     return f"{symbol}{x:{'+,.2f' if signed else ',.2f'}}"
 
-@register_page("curve_positions", "Curve, Stats & Positions")
+@register_page("curve_positions", "Curve, Stats & Positions", has_sidebar=True, order=0)
 def render(ctx: AppContext):
     # ---------- Sidebar (this view is the only owner) ----------
     with st.sidebar:
-        # Config path
         new_path = st.text_input("Position JSON path", value=st.session_state.get("cfg_path", ""))
         if new_path and new_path != st.session_state.get("cfg_path"):
             st.session_state["cfg_path"] = new_path
             st.rerun()
 
-        # Curve bump controls
         spec = curve_bump_controls(
-            available_tenors=list(KEYRATE_GRID_TIIE),  # good default
+            available_tenors=list(KEYRATE_GRID_TIIE),
             default_bumps=st.session_state.get("curve_bump_spec", {}).get("keyrate_bp", {}),
             default_parallel_bp=float(st.session_state.get("curve_bump_spec", {}).get("parallel_bp", 0.0)),
             header="Curve bumps (bp)",
