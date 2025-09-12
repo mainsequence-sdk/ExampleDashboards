@@ -37,9 +37,7 @@ def canonical_tenor(t: str) -> str:
     return (t or "").strip().upper()
 
 
-def load_swap_nodes() -> List[dict]:
-    market = APIDataNode.get_historical_data("interest_rate_swaps", {"USD_rates": {}})
-    return list(market["curve_nodes"])  # copy
+
 
 
 def apply_bumps(nodes: List[dict], bumps_bp_by_tenor: Dict[str, float]) -> List[dict]:
@@ -213,24 +211,37 @@ def price_all(
     cf0_list: List[pd.DataFrame] = []
     cf1_list: List[pd.DataFrame] = []
 
-    for position_line, bumped_line in zip(positions.lines, positions.lines):
-        base_instrument = position_line.instrument
-        bumped_instrument = bumped_line.instrument
+    for base_line, bump_line in zip(positions.lines, bumped_position.lines):
+        base_ins = base_line.instrument
+        bumped_ins = bump_line.instrument
 
-        original_hash = base_instrument.content_hash()
+        ins_id = base_ins.content_hash()
+        units[ins_id] = base_line.units
 
-        npv0[original_hash] = position_line.units * float(base_instrument.price())
-        npv1[original_hash] = position_line.units * float(bumped_instrument.price())
+        # PVs
+        npv0[ins_id] = base_line.units * float(base_ins.price())
+        npv1[ins_id] = base_line.units * float(bumped_ins.price())
 
-        df0 = (base_instrument.get_net_cashflows() * position_line.units).to_frame("amount")
-        df0.loc[:, "ins_id"] = original_hash
-        df1 = (bumped_instrument.get_net_cashflows() * position_line.units).to_frame("amount")
-        df1.loc[:, "ins_id"] = original_hash
+        # CFs (as amounts; keep payment_date as a column)
+        s0 = (base_ins.get_net_cashflows() * base_line.units).to_frame("amount")
+        s1 = (bumped_ins.get_net_cashflows() * base_line.units).to_frame("amount")
 
-        cf0_list.append(df0.reset_index())
-        cf1_list.append(df1.reset_index())
+        s0["ins_id"] = ins_id
+        s1["ins_id"] = ins_id
+        df0 = s0.reset_index().rename(columns={"index": "payment_date"})
+        df1 = s1.reset_index().rename(columns={"index": "payment_date"})
 
-        units[original_hash] = position_line.units
+        if "payment_date" not in df0.columns:  # in case the Series index is already named
+            df0 = s0.reset_index().rename(columns={"payment_date": "payment_date"})
+            df1 = s1.reset_index().rename(columns={"payment_date": "payment_date"})
+
+        if cutoff is not None:
+            df0 = df0[df0["payment_date"] <= cutoff]
+            df1 = df1[df1["payment_date"] <= cutoff]
+
+        cf0_list.append(df0)
+        cf1_list.append(df1)
+
     cf0 = pd.concat(cf0_list, ignore_index=True) if cf0_list else pd.DataFrame()
     cf1 = pd.concat(cf1_list, ignore_index=True) if cf1_list else pd.DataFrame()
     return npv0, npv1, cf0, cf1, units
@@ -513,15 +524,17 @@ def _bump_curve_ts(base_ts: ql.YieldTermStructureHandle, calc_date: ql.Date,
         if s.endswith("D"): return float(s[:-1]) / 365.0
         return float(s)
 
-    if tenor_bumps_bp:
-        xs = np.array(sorted(tenor_to_years(k) for k in tenor_bumps_bp.keys()))
-        ys = np.array([tenor_bumps_bp[k] / 10_000.0 for k in sorted(tenor_bumps_bp.keys(), key=tenor_to_years)])
-    else:
-        xs = np.array([0.0, max_years])
-        ys = np.array([0.0, 0.0])
+    # Standard TIIE key-rate nodes (you can adjust these)
+    keyrate_grid = ["28D", "91D", "182D", "1Y", "2Y", "3Y", "5Y", "7Y", "10Y"]
+
+    # Spread is 0bp at all nodes unless explicitly bumped; also anchor 0Y and max_years at 0bp
+    xs = [0.0] + [tenor_to_years(t) for t in keyrate_grid] + [float(max_years)]
+    ys = [0.0] + [float(tenor_bumps_bp.get(t, 0.0)) / 10_000.0 for t in keyrate_grid] + [0.0]
+    xs = np.array(xs);
+    ys = np.array(ys)
 
     t_grid = np.array([dc.yearFraction(calc_date, d) for d in dates])
-    keyrate_spread = np.interp(t_grid, xs, ys, left=ys[0], right=ys[-1])
+    keyrate_spread = np.interp(t_grid, xs, ys)
     par_spread = float(parallel_bp) / 10_000.0
 
     z_bumped = [max(z + par_spread + s, -0.20) for z, s in zip(z0, keyrate_spread)]  # guard
@@ -541,30 +554,3 @@ def _bump_curve_ts(base_ts: ql.YieldTermStructureHandle, calc_date: ql.Date,
     bumped.enableExtrapolation()
     return ql.YieldTermStructureHandle(bumped)
 
-
-def build_curves_for_ui(cfg: dict, calc_date: ql.Date,
-                        tenor_bumps_bp: dict[str, float],
-                        parallel_bp: float):
-    cur = (cfg.get("valuation", {}).get("currency", "USD") or "USD").upper()
-    curve_source = (cfg.get("alm_assumptions", {}).get("curve_source", "") or "").upper()
-
-    if cur == "MXN" or "TIIE" in curve_source:
-        # Base TIIE curve from Valmer (your helper)
-        base_ts = build_tiie_zero_curve_from_valmer(calc_date)
-        if not isinstance(base_ts, ql.YieldTermStructureHandle):
-            base_ts = ql.YieldTermStructureHandle(base_ts)
-        bump_ts = _bump_curve_ts(base_ts, calc_date, tenor_bumps_bp, parallel_bp)
-
-        # Node markers for plotting
-        tenors = ["28D", "91D", "182D", "1Y", "2Y", "3Y", "5Y", "7Y", "10Y"]
-        nodes_base = _nodes_from_ts(base_ts, calc_date, tenors)
-        nodes_bump = _nodes_from_ts(bump_ts, calc_date, tenors)
-        return base_ts, bump_ts, nodes_base, nodes_bump, "MXN-TIIE-28D"
-
-    # USD path (unchanged)
-    nodes_base = load_swap_nodes()
-    nodes_tenor = apply_bumps(nodes_base, tenor_bumps_bp) if tenor_bumps_bp else list(nodes_base)
-    nodes_final = nodes_parallel_bump(nodes_tenor, parallel_bp) if abs(parallel_bp) > 1e-12 else nodes_tenor
-    base_ts = build_curve_from_swap_nodes(calc_date, nodes_base)
-    bump_ts = build_curve_from_swap_nodes(calc_date, nodes_final)
-    return base_ts, bump_ts, nodes_base, nodes_final, "USD-LIBOR-3M"

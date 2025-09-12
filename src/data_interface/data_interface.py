@@ -3,7 +3,9 @@ from typing import Dict, Optional, TypedDict, Any
 import random
 from src.utils import to_ql_date
 import QuantLib as ql
-
+import os
+import pandas as pd
+from pathlib import Path
 
 class DateInfo(TypedDict, total=False):
     """Defines the date range for a data query."""
@@ -32,8 +34,6 @@ class APIDataNode:
 
         CORRECTED: This now dynamically selects the appropriate calendar based on the index name.
         """
-        print(f"--- MOCK DATA API ---")
-        print(f"Fetching historical fixings for '{index_name}' from {start_date} to {end_date}")
 
         # Dynamically select the calendar based on the index name
         calendar = ql.TARGET()  # Default calendar
@@ -46,14 +46,23 @@ class APIDataNode:
         elif 'SOFR' in index_name:
             calendar = ql.UnitedStates(ql.UnitedStates.SOFR)
             print("Using UnitedStates.SOFR calendar for SOFR.")
+        elif index_name=="TIIE28":
+            DEFAULT_TIIE_CSV = Path(__file__).resolve().parents[2] / "data" / "TIIE28_FIXINGS.csv"
+            csv_path = os.getenv("TIIE28_FIXINGS_CSV") or str(DEFAULT_TIIE_CSV)
+
+            fixings=pd.read_csv(csv_path)
+            fixings.columns=["date","rate"]
+            fixings["date"] = pd.to_datetime(fixings["date"], format="%m/%d/%Y")
+            fixings["date"]=fixings["date"].dt.date
+            if end_date >fixings["date"].max():
+                raise Exception("Fixing not existent")
+            fixings=fixings[fixings.date<=end_date]
+            fixings["rate"]=fixings["rate"]/100
+            return fixings.set_index("date")["rate"].to_dict()
+
+
         elif 'TIIE' in index_name or 'F-TIIE' in index_name:
-            # Mexico interbank conventions
-            try:
-                calendar = ql.Mexico()
-                print("Using Mexico calendar for TIIE.")
-            except Exception:
-                calendar = ql.TARGET()
-                print("Mexico calendar unavailable in this wheel; falling back to TARGET.")
+           raise Exception("Unrecognized index name")
 
         print("---------------------\n")
 
@@ -194,9 +203,7 @@ class APIDataNode:
               - One rate column among: ['zero','rate','yield','tiie'] as a decimal (e.g., 0.095 for 9.5%)
                 (if the file holds percents like 9.50, we'll auto-convert to 0.095)
             """
-            import os
-            import pandas as pd
-            from pathlib import Path
+
 
             # You can override this path in your env; default points to the uploaded file
             DEFAULT_TIIE_CSV = Path(__file__).resolve().parents[2] / "data" / "MEXDERSWAP_IRSTIIEPR.csv"

@@ -219,16 +219,11 @@ def create_floating_rate_bond_with_curve(
     freq = coupon_frequency or pricing_index.tenor()
     dc = day_count or pricing_index.dayCounter()
 
-    # --------- spot-start safeguard (same as swap) ----------
-    fixing_date = cal.adjust(calculation_date, ql.Following)
-    while not pricing_index.isValidFixingDate(fixing_date):
-        fixing_date = cal.advance(fixing_date, 1, ql.Days)
-    spot_start = pricing_index.valueDate(fixing_date)
 
-    eff_start = issue_date if issue_date > calculation_date else spot_start
+
+    eff_start = issue_date
     eff_end = maturity_date
-    if eff_end <= eff_start:  # ensure at least one coupon
-        eff_end = cal.advance(eff_start, freq)
+
 
     # --------- Schedule ----------
     schedule = ql.Schedule(
@@ -266,13 +261,31 @@ def create_floating_rate_bond_with_curve(
                     # If a real fixing exists already, leave it
                     _ = pricing_index.fixing(fix)
                 except RuntimeError:
-                    start = cup.accrualStartDate()
-                    end   = cup.accrualEndDate()
-                    tau   = dc.yearFraction(start, end)
-                    df0   = curve.discount(start)
-                    df1   = curve.discount(end)
-                    fwd   = (df0 / df1 - 1.0) / tau  # ACT/360 simple
-                    pricing_index.addFixing(fix, fwd)
+                    rate_found = False
+                    rate_to_add = None
+
+                    # Fallback: Loop backwards up to 10 business days to find the last available rate.
+                    for days_back in range(1, 11):  # This will loop from 1 to 10
+                        lookback_date = calendar.advance(fix, -days_back, ql.Days)
+                        try:
+                            rate_to_add = pricing_index.fixing(lookback_date)
+                            # If we find a rate, store it, mark it as found, and exit the loop.
+                            rate_found = True
+                            break
+                        except RuntimeError:
+                            # If no fixing exists for this lookback_date, continue to the next day.
+                            continue
+
+                    # After the loop, check if we were successful.
+                    if not rate_found:
+                        # If we looped 10 times and found nothing, raise a clear error.
+                        raise RuntimeError(
+                            f"CRITICAL: Could not find a valid fixing for the required date {fix.ISO()} "
+                            f"within the 10-business-day lookback period."
+                        )
+
+                    # If a rate was found, add it for the *original* required fixing date.
+                    pricing_index.addFixing(fix, rate_to_add)
 
     # --------- Pricing engine ----------
     bond.setPricingEngine(ql.DiscountingBondEngine(curve))

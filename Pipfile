@@ -13,6 +13,7 @@ pandas = "*"
 plotly = "*"
 streamlit = "*"
 scipy = "*"
+tqdm = "*"
 
 [dev-packages]
 

@@ -43,7 +43,7 @@ from typing import Callable, Dict, Optional, Tuple
 import QuantLib as ql
 from functools import lru_cache
 
-from src.utils import to_py_date
+from src.utils import to_py_date,to_ql_date
 
 
 # ----------------------------- Normalization helpers ----------------------------- #
@@ -112,6 +112,7 @@ _ALIASES.update({
     "MXN_TIIE": "TIIE",
 })
 
+
 @lru_cache(maxsize=1)
 def _default_tiie_curve() -> ql.YieldTermStructureHandle:
     # Use your own builder; cached so we don’t rebuild from CSV every call.
@@ -139,17 +140,22 @@ def _create_if_exists(class_name: str, *args):
     cls = getattr(ql, class_name, None)
     return None if cls is None else cls(*args)
 
+
 def _euribor_builder(tenor: str) -> Callable[[ql.YieldTermStructureHandle], ql.Index]:
     tenor = _normalize_tenor(tenor or "3M")
+
     def _b(curve: ql.YieldTermStructureHandle) -> ql.Index:
         # Prefer generic constructor to avoid relying on convenience subclasses
         return ql.Euribor(ql.Period(tenor), curve)
+
     return _b
+
 
 def _libor_builder(currency: str, tenor: str) -> Callable[[ql.YieldTermStructureHandle], ql.Index]:
     ccy = currency.upper()
     tenor = _normalize_tenor(tenor or "3M")
     class_name = f"{ccy}Libor"  # e.g., USDLibor, GBPLibor, JPYLibor, CHFLibor, CADLibor, EURLibor
+
     def _b(curve: ql.YieldTermStructureHandle) -> ql.Index:
         cls = getattr(ql, class_name, None)
         if cls is None:
@@ -158,7 +164,9 @@ def _libor_builder(currency: str, tenor: str) -> Callable[[ql.YieldTermStructure
                 f"Register a custom builder for '{ccy}_LIBOR_{tenor}' via register_index()."
             )
         return cls(ql.Period(tenor), curve)
+
     return _b
+
 
 def _overnight_simple_builder(ql_class_name: str) -> Callable[[ql.YieldTermStructureHandle], ql.Index]:
     def _b(curve: ql.YieldTermStructureHandle) -> ql.Index:
@@ -166,6 +174,7 @@ def _overnight_simple_builder(ql_class_name: str) -> Callable[[ql.YieldTermStruc
         if cls is None:
             raise KeyError(f"{ql_class_name} is not available in your QuantLib build.")
         return cls(curve)
+
     return _b
 
 
@@ -177,7 +186,9 @@ def _tiie_registry_builder(tenor: str) -> Callable[[ql.YieldTermStructureHandle]
         except Exception:
             use_curve = _default_tiie_curve()
         return make_tiie_index(use_curve, tenor)
+
     return _b
+
 
 # Pre-register common overnight indices and well-known families
 def _bootstrap_registry() -> None:
@@ -186,8 +197,8 @@ def _bootstrap_registry() -> None:
         ("SOFR", "Sofr"),
         ("SONIA", "Sonia"),
         ("EONIA", "Eonia"),
-        ("ESTR", "Estr"),     # if unavailable, user can alias/register to their build
-        ("TONAR", "Tonar"),   # JPY TONA (often spelled TONAR in QL)
+        ("ESTR", "Estr"),  # if unavailable, user can alias/register to their build
+        ("TONAR", "Tonar"),  # JPY TONA (often spelled TONAR in QL)
         ("FEDFUNDS", "FedFunds"),
         ("SARON", "Saron"),
     ]:
@@ -209,10 +220,10 @@ def _bootstrap_registry() -> None:
 
     # # TIIE defaults to 28 days; also register common 91D
     register_index("TIIE_28D", _tiie_registry_builder("28D"))
-    register_index("TIIE_28",  _tiie_registry_builder("28D"))
+    register_index("TIIE_28", _tiie_registry_builder("28D"))
     register_index("TIIE_91D", _tiie_registry_builder("91D"))
-    register_index("TIIE_91",  _tiie_registry_builder("91D"))
-    register_index("TIIE",     _tiie_registry_builder("28D"))
+    register_index("TIIE_91", _tiie_registry_builder("91D"))
+    register_index("TIIE", _tiie_registry_builder("28D"))
 
 
 _bootstrap_registry()
@@ -222,7 +233,7 @@ _bootstrap_registry()
 def add_historical_fixings(calculation_date: ql.Date, ibor_index: ql.IborIndex):
     from src.data_interface import APIDataNode
     import datetime
-    from src.utils import to_py_date,to_ql_date
+    from src.utils import to_py_date, to_ql_date
 
     print("Fetching and adding historical fixings...")
 
@@ -256,22 +267,25 @@ def add_historical_fixings(calculation_date: ql.Date, ibor_index: ql.IborIndex):
     # --- NEW: allow overwriting if some dates already have a fixing
     ibor_index.addFixings(valid_qld, valid_rates, True)
     print(f"Successfully added {len(valid_qld)} fixings for {ibor_index.name()}.")
+
+
 def build_tiie_zero_curve_from_valmer(target_date: ql.Date | None = None) -> ql.YieldTermStructureHandle:
     from src.data_interface import APIDataNode
     from src.utils import to_ql_date
     import datetime
 
     market = APIDataNode.get_historical_data("tiie_zero_valmer", {"MXN": {}})
-    nodes  = market["curve_nodes"]
+
+    nodes = market["curve_nodes"]
     if target_date is not None:
-        base=target_date
-        base_py=to_py_date(target_date)
+        base = target_date
+        base_py = to_py_date(target_date)
     else:
-        base_py = market["base_date"]           # Python date from CSV
+        base_py = market["base_date"]  # Python date from CSV
         base = to_ql_date(base_py)
 
     cal = ql.Mexico() if hasattr(ql, "Mexico") else ql.TARGET()
-    dc  = ql.Actual360()
+    dc = ql.Actual360()
 
     # Reference date is the CSV base_date; discount( base_date ) := 1.0
     dates = [base]
@@ -282,8 +296,8 @@ def build_tiie_zero_curve_from_valmer(target_date: ql.Date | None = None) -> ql.
         days = int(n["days_to_maturity"])
         if days < 0:
             continue
-        d=base_py+datetime.timedelta(days=days)
-        d=to_ql_date(d)
+        d = base_py + datetime.timedelta(days=days)
+        d = to_ql_date(d)
 
         sn = d.serialNumber()
         if sn in seen:
@@ -295,7 +309,7 @@ def build_tiie_zero_curve_from_valmer(target_date: ql.Date | None = None) -> ql.
             z *= 0.01
 
         T = dc.yearFraction(base, d)
-        df = 1.0 / (1.0 + z * T)   # Valmer zero is simple ACT/360
+        df = 1.0 / (1.0 + z * T)  # Valmer zero is simple ACT/360
 
         dates.append(d)
         discounts.append(df)
@@ -305,10 +319,11 @@ def build_tiie_zero_curve_from_valmer(target_date: ql.Date | None = None) -> ql.
     ts.enableExtrapolation()
     return ql.YieldTermStructureHandle(ts)
 
+
 def make_tiie_index(
-    curve: ql.YieldTermStructureHandle,
-    tenor: str = "28D",
-    settlement_days: int = 1,
+        curve: ql.YieldTermStructureHandle,
+        tenor: str = "28D",
+        settlement_days: int = 1,
 ) -> ql.IborIndex:
     """
     Construct a TIIE IborIndex linked to `curve` with a given day-based tenor (e.g., '28D', '91D').
@@ -320,6 +335,9 @@ def make_tiie_index(
       - Day count: Actual/360
       - Name: 'TIIE-<tenor>' (e.g., TIIE-28D)
     """
+    from src.data_interface import APIDataNode
+    import datetime
+
     tenor = _normalize_tenor(tenor or "28D")
     if tenor in {"ON", "SN", "TN"}:
         raise ValueError("TIIE does not support overnight/SN/TN tenors; use a fixed-day tenor like '28D' or '91D'.")
@@ -330,27 +348,47 @@ def make_tiie_index(
     except Exception:
         ccy = ql.USDCurrency()  # label only; doesn’t affect pricing math
 
-    return ql.IborIndex(
+    index=ql.IborIndex(
         f"TIIE-{tenor}",
         ql.Period(tenor),
         settlement_days,
         ccy,
         cal,
         ql.ModifiedFollowing,
-        False,                # end-of-month
+        False,  # end-of-month
         ql.Actual360(),
         curve
     )
 
+    fixings = APIDataNode.get_historical_fixings(index_name="TIIE28",
+                                                 start_date=datetime.date(1990, 1, 1),
+                                                 end_date=to_py_date(curve.referenceDate()))
+
+    dates, values = [], []
+    for py_d, v in sorted(fixings.items()):
+        ql_d = to_ql_date(py_d)
+        # Only add on valid fixing dates for this index/calendar
+        if index.isValidFixingDate(ql_d):
+            dates.append(ql_d)
+            values.append(float(v) )
+
+    if dates:
+        index.addFixings(dates, values, True)
+
+    return index
+
+
 def make_tiie_28d_index(
-    curve: ql.YieldTermStructureHandle,
-    settlement_days: int = 1,
+        curve: ql.YieldTermStructureHandle,
+        settlement_days: int = 1,
 ) -> ql.IborIndex:
     # Back-compat shim
     return make_tiie_index(curve, "28D", settlement_days)
 
+
 def _apply_alias(key: str) -> str:
     return _ALIASES.get(key, key)
+
 
 def _find_tenor_in_tokens(tokens: Tuple[str, ...]) -> Optional[str]:
     for t in tokens[::-1]:
@@ -360,11 +398,12 @@ def _find_tenor_in_tokens(tokens: Tuple[str, ...]) -> Optional[str]:
             return f"{t}D"
     return None
 
+
 def get_index(
-    name: str,
-    *,
-    tenor: Optional[str] = None,
-    forwarding_curve: Optional[ql.YieldTermStructureHandle] = None,
+        name: str,
+        *,
+        tenor: Optional[str] = None,
+        forwarding_curve: Optional[ql.YieldTermStructureHandle] = None,
         calculation_date: Optional[ql.Date] = None,
         hydrate_fixings: bool = False,
         settlement_days: Optional[int] = None

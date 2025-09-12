@@ -193,7 +193,7 @@ class FloatingRateBond(BaseModel, JSONMixin):
         df_cupons = df_cupons.reindex(joint_index).fillna(0.0)
         df_redemption = df_redemption.reindex(joint_index).fillna(0.0)
 
-        net_cashflow = df_cupons["amount"] - df_redemption["amount"]
+        net_cashflow = df_cupons["amount"] + df_redemption["amount"]
         net_cashflow.name = "net_cashflow"
         return net_cashflow
 

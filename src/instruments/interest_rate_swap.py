@@ -225,7 +225,7 @@ class TIIESwap(InterestRateSwap):
             return
 
         # Build the default TIIE curve.
-        default_curve = build_tiie_zero_curve_from_valmer(None)
+        default_curve = build_tiie_zero_curve_from_valmer(to_ql_date(self.valuation_date))
 
         # Call the common swap construction logic.
         self._build_swap(default_curve)

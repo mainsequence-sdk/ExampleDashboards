@@ -23,6 +23,7 @@ import pandas as pd
 import streamlit as st
 
 
+
 # ---------- ensure examples/alm is importable ----------
 ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
@@ -30,17 +31,20 @@ if str(ROOT) not in sys.path:
 
 # ---------- repo imports ----------
 from examples.alm.utils import (
-    set_eval, to_py_date, load_swap_nodes, apply_bumps, build_curve_from_swap_nodes,
-    price_all, portfolio_totals, id_meta, nodes_parallel_bump,
+    set_eval, to_py_date, id_meta,
     compute_lcr, compute_nsfr, build_liquidity_ladder,
-    duration_gap_and_eve, nii_12m_shock,get_bumped_position,
-    build_curves_for_ui  # <-- add this
+    duration_gap_and_eve, nii_12m_shock, get_bumped_position, to_ql_date,
 )
 from examples.alm.ux_utils import (
     register_theme, plot_par_yield_curve, plot_liquidity_ladder,
     table_kpis, plot_eve_bars_compare
 )
-from src.instruments.position import Position
+
+from src.instruments.position import Position,npv_table
+from src.utils import to_ql_date
+from ui.curves.bumping import  build_curves_for_ui as build_bumped_curves, KEYRATE_GRID_TIIE, BumpSpec
+from ui.components.curve_bump import curve_bump_controls
+from ui.components.npv_table import st_position_npv_table_paginated
 
 # ---------- Streamlit page ----------
 st.set_page_config(page_title="ALM Cockpit", layout="wide")
@@ -54,9 +58,6 @@ def read_positions(path: str | Path) -> dict:
     with open(path, "r") as fh:
         return json.load(fh)
 
-@st.cache_data(show_spinner=False)
-def get_base_nodes() -> List[dict]:
-    return load_swap_nodes()
 
 def parse_manual_bumps(text: str) -> Dict[str, float]:
     """Parse lines like '5Y: 100' or '3M: -10' into {tenor: bp}."""
@@ -154,35 +155,25 @@ except Exception as e:
 val_date = dt.date.fromisoformat(cfg["valuation"]["valuation_date"])
 currency_symbol = cfg.get("alm_assumptions", {}).get("currency_symbol", "USD$ ")
 ccy = (cfg.get("valuation", {}).get("currency", "USD") or "USD").upper()
-is_mxn = (ccy == "MXN") or ("TIIE" in (cfg.get("alm_assumptions", {}).get("base_index","").upper()))
+
 
 
 # Curve bumps
-st.sidebar.markdown("### Curve bumps (bp)")
-base_nodes = get_base_nodes()
-if is_mxn:
-    available_tenors = ["28D", "91D", "182D", "1Y", "2Y", "3Y", "5Y", "7Y", "10Y"]
-else:
-    available_tenors = sorted({ n.get("tenor","").upper() for n in base_nodes if "tenor" in n })
 
-default_tenors = list(cfg.get("curve_bumps_bp", {}).keys()) or ["5Y"]
-sel_tenors = st.sidebar.multiselect("Tenors to bump", options=available_tenors, default=default_tenors)
 
-tenor_bumps: Dict[str, float] = {}
-for t in sel_tenors:
-    tenor_bumps[t] = st.sidebar.number_input(
-        f"{t} bump (bp)",
-        value=float(cfg.get("curve_bumps_bp", {}).get(t, 0.0)),
-        step=5.0, format="%.1f", key=f"bump_{t}"
-    )
+available_tenors =list(KEYRATE_GRID_TIIE)
 
-st.sidebar.caption("Or paste 'tenor: bp' lines below; these override sliders if present.")
-manual_text = st.sidebar.text_area("Manual bumps", value="", height=80, placeholder="5Y: 100\n3Y: -10")
-manual = parse_manual_bumps(manual_text)
-if manual:
-    tenor_bumps.update(manual)
 
-par_bp = st.sidebar.slider("Parallel bump (bp)", -300.0, 300.0, 0.0, 1.0)
+spec = curve_bump_controls(
+    available_tenors=available_tenors,
+    default_bumps=cfg.get("curve_bumps_bp", {}),
+    default_parallel_bp=0.0,
+    header="Curve bumps (bp)",
+    key="alm_curve_bumps"
+)
+
+
+ts_base, ts_bump, nodes_base, nodes_bump, index_hint = build_bumped_curves( to_ql_date(val_date), spec)
 
 # ALM params
 st.sidebar.markdown("### ALM parameters")
@@ -205,20 +196,21 @@ st.sidebar.info("**units** in the position are multipliers (# of identical posit
 # =========================================
 ql_today = set_eval(val_date)
 
-
-ts_base, ts_bump, nodes_base, nodes_final, index_hint = build_curves_for_ui(
-     cfg, ql_today, tenor_bumps, par_bp
- )
-
 bumped_position=get_bumped_position(position=position,bump_curve=ts_bump)
 
 cutoff = to_py_date(ql_today) + dt.timedelta(days=int(cfg["valuation"].get("cashflow_cutoff_days", 3 * 365)))
-npv0, npv1, cf0, cf1, units = price_all( position,bumped_position, cutoff)
-totals = portfolio_totals(npv0, npv1,units)
-meta = id_meta(position)
+# Independent, single‑responsibility calls:
+cf0 = position.cashflows_by_id( cutoff, apply_units=True)
+cf1 = bumped_position.cashflows_by_id( cutoff, apply_units=True)
+npv0 = position.npvs_by_id( apply_units=True)
+npv1 = bumped_position.npvs_by_id(apply_units=True)
+units = position.units_by_id()  # used for duration gap sign split
+totals_raw = npv_table(npv0, npv1, units, include_total=True)  # optional raw df for debugging
 
+meta = id_meta(position)
+units_by_id_meta = {k: v["units"] for k, v in meta.items()}
 # ALM analytics (base & bumped)
-base_for_risk = ts_base if is_mxn else nodes_base
+base_for_risk = ts_base
 
 lcr_base = compute_lcr(cf0, meta, to_py_date(ql_today), hqla, horizon_days=lcr_days, inflow_cap=inflow_cap)
 liq_base = build_liquidity_ladder(cf0, to_py_date(ql_today), months=liq_months)
@@ -226,7 +218,7 @@ dur_base = duration_gap_and_eve(npv0, npv1, eve_bp=float(eve_bp),units=units)
 nii_base = nii_12m_shock(cf0, cf1, ql_today, shock_bp=float(nii_bp), horizon_days=nii_days)
 nsfr_vals = compute_nsfr(meta)
 
-bump_for_risk = ts_bump if is_mxn else nodes_final
+bump_for_risk = ts_bump
 
 
 lcr_bump = compute_lcr(cf1, meta, to_py_date(ql_today), hqla, horizon_days=lcr_days, inflow_cap=inflow_cap)
@@ -245,31 +237,17 @@ st.subheader("Par yield curve (base vs bumped)")
 st.plotly_chart(
     plot_par_yield_curve(
         ts_base, ts_bump, ql_today,
-        nodes_base, nodes_final,
-        bump_tenors=tenor_bumps,
+        nodes_base, nodes_bump,
+        bump_tenors=spec.keyrate_bp,
         max_years=12, step_months=3,
-        index_hint="MXN-TIIE-28D" if is_mxn else "USD-LIBOR-3M"
+        index_hint=index_hint
     ),
     use_container_width=True
 )
 
-st.subheader("Portfolio totals (NPV)")
-disp = totals_display_df_fmt(totals, currency_symbol)
-st.dataframe(
-    disp,
-    use_container_width=True,
-    hide_index=True,
-    column_config={
-        "Instrument": st.column_config.TextColumn("Instrument", width="medium"),
-        "Units": st.column_config.TextColumn("Units", width="small"),
-        "Base": st.column_config.TextColumn("Base", width="medium"),
-        "Bumped": st.column_config.TextColumn("Bumped", width="medium"),
-        "Δ": st.column_config.TextColumn("Δ", width="medium"),
-        "Details": st.column_config.LinkColumn("Details", display_text="Open"),
-    },
-    height=min(440, 60 + 32 * len(disp.index)),
-)
 
+st.subheader("Portfolio totals (NPV)")
+disp = st_position_npv_table_paginated(position, currency_symbol, bumped_position=bumped_position)
 # Optional selection (alternative to clicking "Open")
 ids_no_total = [i for i in disp["Instrument"].tolist() if i.upper() != "TOTAL"]
 with st.expander("Select instrument (alternative to clicking 'Open')"):
@@ -283,13 +261,13 @@ if sel and sel.upper() != "TOTAL":
     st.markdown("---")
     st.subheader(f"Instrument details — **{sel}**")
 
-    base_val = float(npv0.get(sel, np.nan) * units_by_id.get(sel, 1.0)) if sel in npv0 else np.nan
-    bump_val = float(npv1.get(sel, np.nan) * units_by_id.get(sel, 1.0)) if sel in npv1 else np.nan
+    base_val = float(npv0.get(sel, np.nan)) if sel in npv0 else np.nan
+    bump_val = float(npv1.get(sel, np.nan)) if sel in npv1 else np.nan
 
     cA, cB, cC = st.columns(3)
     cA.metric("NPV (base)", f"{currency_symbol}{base_val:,.2f}",
               delta=f"{currency_symbol}{(bump_val - base_val):+,.2f}" if np.isfinite(base_val) and np.isfinite(bump_val) else None)
-    cB.metric("Units", f"{units_by_id.get(sel, 1.0):,.2f}")
+    cB.metric("Units", f"{units.get(sel, 1.0):,.2f}")
     cC.button("Clear selection", on_click=lambda: set_query_ins(None))
 
     t1, t2, t3 = st.tabs(["Cashflows — Base", "Cashflows — Bumped", "Template / TODO"])
@@ -400,6 +378,6 @@ with st.expander("Show KPI tables"):
 
 # ----- debug / raw data (optional) -----
 with st.expander("Debug / raw data"):
-    st.write("Totals (raw):", totals)
+    st.write("Totals (raw):", totals_raw)
     st.write("Cashflows (base, head):", cf0.head() if not cf0.empty else "(empty)")
     st.write("Cashflows (bumped, head):", cf1.head() if not cf1.empty else "(empty)")

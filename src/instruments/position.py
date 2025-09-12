@@ -16,6 +16,8 @@ from .knockout_fx_option import KnockOutFXOption
 from .fixed_rate_bond import FixedRateBond
 from .floating_rate_bond import FloatingRateBond
 from .interest_rate_swap import InterestRateSwap, TIIESwap
+import pandas as pd
+import numpy as np
 
 
 @dataclass(frozen=True)
@@ -77,6 +79,64 @@ class Position(BaseModel):
             inst = cls_.from_json(payload)  # <-- use JSONMixin.from_json (now accepts dict)
             lines.append(PositionLine(instrument=inst, units=units))
         return cls(lines=lines)
+
+        # ---------------- JSON ENCODING ----------------
+
+    def _instrument_payload(self, inst: Any) -> Dict[str, Any]:
+        """
+        Robustly obtain a JSON-serializable dict from an instrument.
+        Tries, in order: to_json_dict(), to_json() (parse), model_dump(mode="json").
+        """
+        # 1) Preferred: your JSONMixin path
+        to_jd = getattr(inst, "to_json_dict", None)
+        if callable(to_jd):
+            payload = to_jd()
+            if isinstance(payload, dict):
+                return payload
+
+        # 2) Accept a JSON string and parse it
+        to_js = getattr(inst, "to_json", None)
+        if callable(to_js):
+            s = to_js()
+            if isinstance(s, (bytes, bytearray)):
+                s = s.decode("utf-8")
+            if isinstance(s, str):
+                try:
+                    obj = json.loads(s)
+                    if isinstance(obj, dict):
+                        return obj
+                except Exception:
+                    pass  # fall through
+
+        # 3) Pydantic models without JSONMixin
+        md = getattr(inst, "model_dump", None)
+        if callable(md):
+            return md(mode="json")
+
+        raise TypeError(
+            f"Instrument {type(inst).__name__} is not JSON-serializable. "
+            f"Provide to_json_dict()/to_json() or a Pydantic model."
+        )
+
+    def to_json_dict(self) -> Dict[str, Any]:
+        """
+        Serialize the position as:
+        {
+          "lines": [
+            { "instrument_type": "...", "instrument": { ... }, "units": <float> },
+            ...
+          ]
+        }
+        """
+        out_lines: list[dict] = []
+        for line in self.lines:
+            inst = line.instrument
+            out_lines.append({
+                "instrument_type": type(inst).__name__,
+                "instrument": self._instrument_payload(inst),
+                "units": float(line.units),
+            })
+        return {"lines": out_lines}
 
     # ---- validation ---------------------------------------------------------
     @field_validator("lines")
@@ -225,3 +285,188 @@ class Position(BaseModel):
     @classmethod
     def from_single(cls, instrument: Instrument, units: float = 1.0) -> "Position":
         return cls(lines=[PositionLine(instrument=instrument, units=units)])
+
+    # Mao interface
+
+    def units_by_id(self) -> Dict[str, float]:
+        """Map instrument id -> units."""
+        return {line.instrument.content_hash(): float(line.units) for line in self.lines}
+
+    def npvs_by_id(self, *, apply_units: bool = True) -> Dict[str, float]:
+        """
+        Return PVs per instrument id. If apply_units=True, PVs are already scaled by line.units.
+        """
+        out: Dict[str, float] = {}
+        for line in self.lines:
+            ins = line.instrument
+            ins_id = ins.content_hash()
+            pv = float(ins.price())
+            if apply_units:
+                pv *= float(line.units)
+            out[ins_id] = pv
+        return out
+
+    def cashflows_by_id(self,
+                        cutoff: Optional[datetime.date] = None,
+                        *,
+                        apply_units: bool = True) -> pd.DataFrame:
+        """
+        Aggregate cashflows across all lines.
+
+        Returns a DataFrame with columns: ['ins_id', 'payment_date', 'amount'].
+        If apply_units=True, amounts are multiplied by line.units.
+        """
+        rows = []
+        for line in self.lines:
+            ins = line.instrument
+            ins_id = ins.content_hash()
+
+            s = ins.get_net_cashflows()  # Expect Series indexed by payment_date
+            if s is None:
+                continue
+            if not isinstance(s, pd.Series):
+                # Be conservative: try converting if possible; otherwise skip
+                try:
+                    s = pd.Series(s)
+                except Exception:
+                    continue
+
+            df = s.to_frame("amount").reset_index()
+            # Normalize index/column name for payment date
+            if "payment_date" not in df.columns:
+                # typical reset_index name is 'index' or the original index name
+                idx_col = "payment_date" if s.index.name == "payment_date" else "index"
+                df = df.rename(columns={idx_col: "payment_date"})
+
+            if cutoff is not None:
+                df = df[df["payment_date"] <= cutoff]
+
+            if apply_units:
+                df["amount"] = df["amount"].astype(float) * float(line.units)
+            else:
+                df["amount"] = df["amount"].astype(float)
+
+            df["ins_id"] = ins_id
+            rows.append(df[["ins_id", "payment_date", "amount"]])
+
+        if not rows:
+            return pd.DataFrame(columns=["ins_id", "payment_date", "amount"])
+
+        return pd.concat(rows, ignore_index=True)
+
+    def agg_net_cashflows(self) -> pd.DataFrame:
+        """
+        Aggregate 'net' cashflows from all instruments.
+        Preferred: instrument.get_net_cashflows() -> pd.Series indexed by payment_date.
+        Fallback:  instrument.get_cashflows() -> dict[leg] -> list[dict] with 'amount' and a date field.
+        Returns DataFrame with ['payment_date','amount'] summed across instruments & units.
+        """
+        rows = []
+        for line in self.lines:
+            inst = line.instrument
+            units = float(line.units)
+
+            # Preferred API (already used in your other app)
+            s = getattr(inst, "get_net_cashflows", None)
+            if callable(s):
+                ser = s()
+                if isinstance(ser, pd.Series):
+                    df = ser.to_frame("amount").reset_index()  # index is payment_date
+                    # Normalize column name
+                    if "index" in df.columns and "payment_date" not in df.columns:
+                        df = df.rename(columns={"index": "payment_date"})
+                    df["amount"] = df["amount"].astype(float) * units
+                    rows.append(df[["payment_date", "amount"]])
+                    continue  # next line
+
+            # Fallback: flatten get_cashflows()
+            g = getattr(inst, "get_cashflows", None)
+            if callable(g):
+                flows = g()
+                flat = []
+                for leg, items in (flows or {}).items():
+                    for cf in (items or []):
+                        pay = cf.get("payment_date") or cf.get("date") or cf.get("pay_date") or cf.get("fixing_date")
+                        amt = cf.get("amount")
+                        if pay is None or amt is None:
+                            continue
+                        flat.append({"payment_date": pd.to_datetime(pay).date(), "amount": float(amt) * units})
+                if flat:
+                    rows.append(pd.DataFrame(flat))
+
+        if not rows:
+            return pd.DataFrame(columns=["payment_date", "amount"])
+
+        df_all = pd.concat(rows, ignore_index=True)
+        df_all["payment_date"] = pd.to_datetime(df_all["payment_date"]).dt.date
+        df_all = df_all.groupby("payment_date", as_index=False)["amount"].sum()
+        return df_all
+
+    def position_total_npv(self) -> float:
+        """Σ units * instrument.price()."""
+        tot = 0.0
+        for line in self.lines:
+            tot += float(line.units) * float(line.instrument.price())
+        return float(tot)
+
+    def position_carry_to_cutoff(self, valuation_date: datetime.date, cutoff: datetime.date) -> float:
+        """
+        Carry = Σ net cashflow amounts with valuation_date < payment_date ≤ cutoff.
+        Positive = inflow to the bank; negative = outflow.
+        """
+        cf = self.agg_net_cashflows()
+        if cf.empty:
+            return 0.0
+        mask = (cf["payment_date"] > valuation_date) & (cf["payment_date"] <= cutoff)
+        return float(cf.loc[mask, "amount"].sum())
+
+def npv_table(npv_base: Dict[str, float],
+              npv_bumped: Optional[Dict[str, float]] = None,
+              units: Optional[Dict[str, float]] = None,
+              *,
+              include_total: bool = True) -> pd.DataFrame:
+    """
+    Build a raw (unformatted) NPV table for programmatic use.
+
+    Columns: instrument, units, base, bumped, delta  (bumped/delta are NaN if npv_bumped is None)
+    """
+    ids = sorted(npv_base.keys())
+    rows = []
+    for ins_id in ids:
+        base = float(npv_base.get(ins_id, np.nan))
+        bumped = float(npv_bumped.get(ins_id, np.nan)) if npv_bumped is not None else np.nan
+        delta = bumped - base if npv_bumped is not None and np.isfinite(base) and np.isfinite(bumped) else np.nan
+        u = float(units.get(ins_id, np.nan)) if units else np.nan
+        rows.append({"instrument": ins_id, "units": u, "base": base, "bumped": bumped, "delta": delta})
+
+    df = pd.DataFrame(rows)
+
+    if include_total and not df.empty:
+        tot = {
+            "instrument": "TOTAL",
+            "units": np.nan,
+            "base": df["base"].sum(skipna=True),
+            "bumped": df["bumped"].sum(skipna=True) if npv_bumped is not None else np.nan,
+            "delta": df["delta"].sum(skipna=True) if npv_bumped is not None else np.nan,
+        }
+        df = pd.concat([df, pd.DataFrame([tot])], ignore_index=True)
+
+    return df
+
+def portfolio_stats(position, bumped_position, valuation_date: datetime.date, cutoff: datetime.date):
+    """
+    Returns a dict with base/bumped NPV and Carry to cutoff, plus deltas.
+    """
+    npv_base  = position.position_total_npv()
+    npv_bump  = bumped_position.position_total_npv()
+    carry_base = position.position_carry_to_cutoff( valuation_date, cutoff)
+    carry_bump = bumped_position.position_carry_to_cutoff( valuation_date, cutoff)
+
+    return {
+        "npv_base": npv_base,
+        "npv_bumped": npv_bump,
+        "npv_delta": npv_bump - npv_base,
+        "carry_base": carry_base,
+        "carry_bumped": carry_bump,
+        "carry_delta": carry_bump - carry_base,
+    }
