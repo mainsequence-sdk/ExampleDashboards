@@ -15,10 +15,11 @@ from .json_codec import (
     daycount_to_json, daycount_from_json,
     calendar_to_json, calendar_from_json,
     ibor_to_json, ibor_from_json,
+schedule_to_json, schedule_from_json
 )
+from .base_instrument import InstrumentModel
 
-
-class FloatingRateBond(BaseModel, JSONMixin):
+class FloatingRateBond(InstrumentModel):
     """Floating-rate bond with specified floating rate index."""
 
     face_value: float = Field(
@@ -58,6 +59,11 @@ class FloatingRateBond(BaseModel, JSONMixin):
     valuation_date: datetime.date = Field(
         default_factory=datetime.date.today,
         description="Valuation date (QuantLib evaluation date)."
+    )
+
+    schedule:Optional[ql.Schedule] =Field(
+        None,
+        description="Quantlib Custom Schedule"
     )
 
     model_config = {"arbitrary_types_allowed": True}
@@ -102,59 +108,57 @@ class FloatingRateBond(BaseModel, JSONMixin):
     def _val_floating_rate_index(cls, v):
         return ibor_from_json(v)
 
+    @field_serializer("schedule", when_used="json")
+    def _ser_schedule(self, v: Optional[ql.Schedule]) -> Optional[Dict[str, Any]]:
+        return schedule_to_json(v)
 
-    @property
-    def bond(self) -> ql.FloatingRateBond:
-        """
-        Provides lazy-loaded, on-demand access to the underlying QuantLib
-        FloatingRateBond object.
-        """
-        if self._bond is None:
-            self._bond = self._build_ql_bond()
-        return self._bond
+    @field_validator("schedule", mode="before")
+    @classmethod
+    def _val_schedule(cls, v):
+        return schedule_from_json(v)
+
+
 
     def reset_curve(self, curve: ql.YieldTermStructure) -> None:
         """Re-prices the swap using a new, user-provided curve."""
         # Call the common swap construction logic with the new curve.
         self._build_bond(curve)
 
-    def _build_bond(self,curve):
+    def _build_bond(self,curve,with_yield:Optional[float]=None) -> ql.FloatingRateBond:
         ql_calc_date = to_ql_date(self.valuation_date)
-        if curve is not None:
-
-            self._bond = create_floating_rate_bond_with_curve(
-                calculation_date=ql_calc_date,
-                face=self.face_value,
-                issue_date=to_ql_date(self.issue_date),
-                maturity_date=to_ql_date(self.maturity_date),
-                floating_rate_index=self.floating_rate_index,
-                spread=self.spread,
-                coupon_frequency=self.coupon_frequency,
-                day_count=self.day_count,
-                calendar=self.calendar,
-                business_day_convention=self.business_day_convention,
-                settlement_days=self.settlement_days,
-                curve=curve,
-                seed_past_fixings_from_curve=True,
-            )
-        else:
-            # Legacy path (no forwarding curve on the index) — your existing behavior
-            self._bond = create_floating_rate_bond(
-                calculation_date=ql_calc_date,
-                face=self.face_value,
-                issue_date=to_ql_date(self.issue_date),
-                maturity_date=to_ql_date(self.maturity_date),
-                floating_rate_index=self.floating_rate_index,
-                spread=self.spread,
-                coupon_frequency=self.coupon_frequency,
-                day_count=self.day_count,
-                calendar=self.calendar,
-                business_day_convention=self.business_day_convention,
-                settlement_days=self.settlement_days
+        discount_curve=None
+        if with_yield is not None:
+            discount_curve = ql.FlatForward(
+                to_ql_date(self.valuation_date),  # Reference date for the curve
+                with_yield,
+                self.day_count,
+                ql.Compounded,
+                ql.Annual
             )
 
-    def _setup_pricer(self) -> None:
-        if self._bond is None:
+        self._bond = create_floating_rate_bond_with_curve(
+            calculation_date=ql_calc_date,
+            face=self.face_value,
+            issue_date=to_ql_date(self.issue_date),
+            maturity_date=to_ql_date(self.maturity_date),
+            floating_rate_index=self.floating_rate_index,
+            spread=self.spread,
+            coupon_frequency=self.coupon_frequency,
+            day_count=self.day_count,
+            calendar=self.calendar,
+            business_day_convention=self.business_day_convention,
+            settlement_days=self.settlement_days,
+            curve=curve,
+            discount_curve=discount_curve,
+            seed_past_fixings_from_curve=True,
+            schedule=self.schedule
+        )
+        self._with_yield=with_yield
+
+
+    def _setup_pricer(self,with_yield:Optional[float]=None) -> None:
+
+        def get_curve():
             ql_calc_date = to_ql_date(self.valuation_date)
             # Align swap behavior: forecast “today”, no historic fixing required
             ql.Settings.instance().evaluationDate = ql_calc_date
@@ -166,16 +170,37 @@ class FloatingRateBond(BaseModel, JSONMixin):
                 curve = self.floating_rate_index.forwardingTermStructure()
             except Exception as e:
                 raise e
-            self._build_bond(curve)
+            return curve
+
+        if self._bond is None:
+
+
+            curve=get_curve()
+            self._build_bond(curve,with_yield=with_yield)
+        else:
+            if self._with_yield is not None:
+                if with_yield is None:
+                    del self._bond
+                    curve = get_curve()
+                    self._build_bond(curve, with_yield=with_yield)
+                    return None
+
+                if self._with_yield !=with_yield:
+                    del self._bond
+                    curve = get_curve()
+                    self._build_bond(curve, with_yield=with_yield)
+                    return None
 
 
 
-    def price(self) -> float:
-        self._setup_pricer()
+
+
+    def price(self,with_yield:Optional[float]=None) -> float:
+        self._setup_pricer(with_yield=with_yield)
         return float(self._bond.NPV())
 
-    def analytics(self) -> dict:
-        self._setup_pricer()
+    def analytics(self,with_yield:Optional[float]=None) -> dict:
+        self._setup_pricer(with_yield=with_yield)
         _ = self._bond.NPV()
         return {
             "clean_price": self._bond.cleanPrice(),
@@ -196,7 +221,20 @@ class FloatingRateBond(BaseModel, JSONMixin):
         net_cashflow = df_cupons["amount"] + df_redemption["amount"]
         net_cashflow.name = "net_cashflow"
         return net_cashflow
+    def get_cashflows_df(self):
+        import pandas as pd
+        cashflows= self.get_cashflows()
 
+        df_cupons=pd.DataFrame(cashflows["floating"]).set_index("payment_date")
+        df_redemption = pd.DataFrame(cashflows["redemption"]).set_index("payment_date")
+
+        joint_index = df_cupons.index.union(df_redemption.index)
+        df_cupons = df_cupons.reindex(joint_index).fillna(0.0)
+        df_redemption = df_redemption.reindex(joint_index).fillna(0.0)
+
+        df_cupons["redemption"] = df_redemption["amount"]
+
+        return df_cupons
 
     def get_cashflows(self) -> Dict[str, List[Dict[str, Any]]]:
         """
@@ -234,3 +272,24 @@ class FloatingRateBond(BaseModel, JSONMixin):
                 })
 
         return out
+
+    def get_yield(self,override_clean_price:Optional[float]=None) -> float:
+        self._setup_pricer()
+        # Make sure we evaluate on this object's valuation_date
+        ql.Settings.instance().evaluationDate = to_ql_date(self.valuation_date)
+
+        clean_price=override_clean_price
+        if clean_price is None:
+            clean_price = self._bond.cleanPrice()  # price per 100 nominal
+        freq: ql.Frequency = self.coupon_frequency.frequency()  # convert Period -> Frequency
+        settlement: ql.Date = self._bond.settlementDate()
+
+        # Use the overload: yield(Real, DayCounter, Compounding, Frequency, Date)
+        ytm = self._bond.bondYield(
+            clean_price,
+            self.day_count,
+            ql.Compounded,
+            freq,
+            settlement
+        )
+        return float(ytm)

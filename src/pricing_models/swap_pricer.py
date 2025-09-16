@@ -1,5 +1,5 @@
 import QuantLib as ql
-from src.data_interface import APIDataNode
+from src.data_interface import data_interface
 from src.utils import to_py_date,to_ql_date
 import datetime
 from typing import List, Dict, Any, Optional
@@ -49,7 +49,7 @@ def build_yield_curve(calculation_date: ql.Date) -> ql.YieldTermStructureHandle:
     """
     print("Building bootstrapped yield curve from market nodes...")
 
-    rate_data = APIDataNode.get_historical_data("interest_rate_swaps", {"USD_rates": {}})
+    rate_data = data_interface.get_historical_data("interest_rate_swaps", {"USD_rates": {}})
     curve_nodes = rate_data['curve_nodes']
 
     calendar = ql.TARGET()

@@ -4,7 +4,7 @@ from typing import Optional, List, Dict, Any
 import QuantLib as ql
 from pydantic import BaseModel, Field, PrivateAttr, field_serializer, field_validator
 
-from src.data_interface import APIDataNode
+from src.data_interface import data_interface
 from src.pricing_models.swap_pricer import (price_vanilla_swap, get_swap_cashflows,
                                             price_vanilla_swap_with_curve,make_ftiie_index,
 price_ftiie_ois_with_curve
@@ -19,9 +19,10 @@ from .json_codec import (
     ibor_to_json, ibor_from_json,
 )
 import pandas as pd
+from .base_instrument import InstrumentModel
 
 
-class InterestRateSwap(BaseModel,JSONMixin):
+class InterestRateSwap(InstrumentModel):
     """Plain-vanilla fixed-for-floating interest rate swap."""
 
     notional: float = Field(
@@ -57,7 +58,7 @@ class InterestRateSwap(BaseModel,JSONMixin):
         ..., description="Floating index object (e.g., ql.USDLibor(ql.Period('3M'), curve))."
     )
 
-    valuation_date: datetime.date = Field(
+    valuation_date: datetime.datetime = Field(
         ..., description="Valuation date (sets QuantLib evaluation date)."
     )
 
@@ -183,7 +184,7 @@ class TIIESwap(InterestRateSwap):
         tiie = get_index(
             "TIIE", tenor="28D",
             forwarding_curve=curve,
-            calculation_date=ql_val,
+            target_date=self.valuation_date,
             hydrate_fixings=True
         )
         cal = tiie.fixingCalendar()
@@ -225,7 +226,7 @@ class TIIESwap(InterestRateSwap):
             return
 
         # Build the default TIIE curve.
-        default_curve = build_tiie_zero_curve_from_valmer(to_ql_date(self.valuation_date))
+        default_curve = build_tiie_zero_curve_from_valmer(self.valuation_date)
 
         # Call the common swap construction logic.
         self._build_swap(default_curve)

@@ -11,8 +11,9 @@ import streamlit as st
 import QuantLib as ql
 import pandas as pd
 
-from ui.curves.bumping import build_curves_for_ui as build_bumped_curves, BumpSpec
+from dashboards.curves.bumping import build_curves_for_ui as build_bumped_curves, BumpSpec
 from src.instruments.position import Position
+from dashboards.components.position_loader import load_position_cached, instantiate_position
 
 # ---------- cacheable helpers ----------
 @st.cache_data(show_spinner=False)
@@ -93,37 +94,35 @@ class AppContext:
     bumped_position: Position
     carry_cutoff: dt.date
 
-def build_context(config_path: str | Path | None = None) -> tuple[AppContext, BumpSpec]:
-    """Domain-specific; the scaffold calls this via a small wrapper (below)."""
-    from ui.curves.bumping import KEYRATE_GRID_TIIE  # imported for side effects in views
+def build_context(config_path: str | Path | None = None, *, mode: str = "full") -> tuple[AppContext, BumpSpec]:
     cfg = read_json(config_path)
 
     val_date = dt.date.fromisoformat(cfg["valuation"]["valuation_date"])
-    currency_symbol = cfg.get("alm_assumptions", {}).get("currency_symbol", "USD$ ")
+    currency_symbol = "MXN$"
 
-    # First pass (no bumps) to discover index/nodes (UI-free)
-    spec0 = BumpSpec(keyrate_bp=cfg.get("curve_bumps_bp", {}), parallel_bp=0.0)
-    ts_base0, ts_bump0, nodes_base0, nodes_bump0, index_hint = build_bumped_curves(qld(val_date), spec0)
-
-    # Final spec: explicit session wins, else defaults from the config file
+    # Final spec: session overrides file
     ss = st.session_state.get("curve_bump_spec")
     spec = BumpSpec(
         keyrate_bp=(ss or {}).get("keyrate_bp", cfg.get("curve_bumps_bp", {})),
         parallel_bp=float((ss or {}).get("parallel_bp", 0.0)),
     )
 
-    # Curves for the chosen spec
-    ts_base, ts_bump, nodes_base, nodes_bump, _ = build_bumped_curves(qld(val_date), spec)
+    # Build curves ONCE (internal curve caches will also help on reruns)
+    ts_base, ts_bump, nodes_base, nodes_bump, index_hint = build_bumped_curves(qld(val_date), spec)
 
-    # Position (base)
-    position = Position.from_json_dict(cfg["position"])
-    for line in position.lines:
-        line.instrument.valuation_date = val_date
-        line.instrument.reset_curve(ts_base)
+    # ---- FAST position creation (cached on file content) ----
+    # parse the big JSON once and reuse the template
+    cfg_dict, template, _sig = load_position_cached(config_path)
 
-    # Bumped position
-    from examples.alm.utils import get_bumped_position
-    bumped_position = get_bumped_position(position=position, bump_curve=ts_bump)
+    # Base position for whichever page needs it
+    position = instantiate_position(template, curve=ts_base, valuation_date=val_date)
+
+    # Build bumped position only when a page needs the whole thing
+    if mode == "full":
+        from examples.alm.utils import get_bumped_position
+        bumped_position = get_bumped_position(position=position, bump_curve=ts_bump)
+    else:
+        bumped_position = position  # placeholder; asset_detail computes its own bumped value per-line
 
     default_days = int(cfg["valuation"].get("cashflow_cutoff_days", 365))
     carry_cutoff = val_date + dt.timedelta(days=default_days)
@@ -137,7 +136,3 @@ def build_context(config_path: str | Path | None = None) -> tuple[AppContext, Bu
 
 # The scaffold expects build_context(session_state) -> ctx.
 # We wrap our build_context(file) so the example can keep session-driven behavior.
-def build_context_for_scaffold(session_state) -> AppContext:
-    cfg_path = session_state.get("cfg_path")
-    ctx, _ = build_context(cfg_path)
-    return ctx

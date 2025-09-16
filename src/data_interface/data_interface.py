@@ -18,7 +18,7 @@ class DateInfo(TypedDict, total=False):
 UniqueIdentifierRangeMap = Dict[str, DateInfo]
 
 
-class APIDataNode:
+class MockDataInterface:
     """
     A mock class to simulate fetching financial time series data from an API.
 
@@ -227,7 +227,65 @@ class APIDataNode:
                 for d, z in zip(df["days_to_maturity"], df["zero_rate"])
                 if d > 0
             ]
-            return {"curve_nodes": nodes,"base_date":base_dt}
+            return {"curve_nodes": nodes}
 
         else:
             raise ValueError(f"Table '{table_name}' not found in mock data API.")
+
+import json
+import base64
+import gzip
+
+class MSInterface():
+
+    @staticmethod
+    def decompress_string_to_curve(b64_string: str) -> Dict[Any, Any]:
+        """
+        Decodes, decompresses, and deserializes a string back into a curve dictionary.
+
+        Pipeline: Base64 (text) -> Gzip (binary) -> JSON -> Dict
+
+        Args:
+            b64_string: The Base64-encoded string from the database or API.
+
+        Returns:
+            The reconstructed Python dictionary.
+        """
+        # 1. Encode the ASCII string back into Base64 bytes
+        base64_bytes = b64_string.encode('ascii')
+
+        # 2. Decode the Base64 to get the compressed Gzip bytes
+        compressed_bytes = base64.b64decode(base64_bytes)
+
+        # 3. Decompress the Gzip bytes to get the original JSON bytes
+        json_bytes = gzip.decompress(compressed_bytes)
+
+        # 4. Decode the JSON bytes to a string and parse back into a dictionary
+        return json.loads(json_bytes.decode('utf-8'))
+
+    def get_historical_discount_curve(self,curve_name,target_date):
+        from mainsequence.tdag import APIDataNode
+        from src.settings import DISCOUNT_CURVES_TABLE
+        data_node=APIDataNode.build_from_identifier(identifier=DISCOUNT_CURVES_TABLE)
+
+        limit=target_date+datetime.timedelta(days=1)
+        curve=data_node.get_ranged_data_per_asset(range_descriptor={curve_name: {"start_date":target_date,"start_date_operand":">=",
+                                                                                 "end_date":limit,"end_date_operand":"<",}}
+        )
+
+        if curve.empty:
+            raise Exception(f"{target_date} is empty.")
+        zeros=self.decompress_string_to_curve(curve["curve"].iloc[0])
+        zeros=pd.Series(zeros).reset_index()
+        zeros["index"]=pd.to_numeric(zeros["index"])
+        zeros=zeros.set_index("index")[0]
+
+        nodes = [
+            {"days_to_maturity": d, "zero": z}
+            for d, z in zeros.to_dict().items()
+            if d > 0
+        ]
+
+        return nodes
+
+

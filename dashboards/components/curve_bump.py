@@ -5,7 +5,7 @@ from typing import Dict, List, Optional
 
 import streamlit as st
 
-from ui.curves import BumpSpec
+from dashboards.curves import BumpSpec
 
 
 def _parse_manual(text: str) -> Dict[str, float]:

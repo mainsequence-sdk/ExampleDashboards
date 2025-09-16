@@ -119,6 +119,186 @@ def calendar_from_json(v: Union[Dict[str, Any], str, ql.Calendar]) -> ql.Calenda
         return ctor(enum_cls.Market(int(market)))
     raise TypeError(f"Cannot decode calendar from {type(v).__name__}")
 
+# ----------------------------- Business Day Convention helpers --------------
+
+_BDC_TO_STR = {
+    ql.Following: "Following",
+    ql.ModifiedFollowing: "ModifiedFollowing",
+    ql.Preceding: "Preceding",
+    ql.ModifiedPreceding: "ModifiedPreceding",
+    ql.Unadjusted: "Unadjusted",
+    ql.HalfMonthModifiedFollowing: "HalfMonthModifiedFollowing",
+    ql.Nearest: "Nearest",
+}
+
+_STR_TO_BDC = {v: k for k, v in _BDC_TO_STR.items()}
+
+def bdc_to_json(bdc: int) -> Union[int, str]:
+    """Encode BusinessDayConvention as a stable string (falls back to int if unknown)."""
+    return _BDC_TO_STR.get(int(bdc), int(bdc))
+
+def bdc_from_json(v: Union[int, str]) -> int:
+    """Decode a BusinessDayConvention from string or int."""
+    if isinstance(v, int):
+        return int(v)
+    if isinstance(v, str):
+        if v in _STR_TO_BDC:
+            return int(_STR_TO_BDC[v])
+        # accept enum name variants like 'Following' / 'following'
+        key = v[0].upper() + v[1:]
+        if key in _STR_TO_BDC:
+            return int(_STR_TO_BDC[key])
+        try:
+            return int(v)
+        except Exception:
+            pass
+    raise ValueError(f"Unsupported business day convention '{v}'")
+# ----------------------------- Date utils -----------------------------------
+
+def _ql_date_to_iso(d: ql.Date) -> str:
+    return f"{d.year():04d}-{int(d.month()):02d}-{d.dayOfMonth():02d}"
+
+def _iso_to_ql_date(s: str) -> ql.Date:
+    y, m, d = (int(x) for x in s.split("-"))
+    return ql.Date(d, m, y)
+# ----------------------------- Schedule codec --------------------------------
+
+# Optional rule mapping (used only if you ever store rule-based schedules)
+_RULE_TO_STR = {
+    ql.DateGeneration.Backward: "Backward",
+    ql.DateGeneration.Forward: "Forward",
+    ql.DateGeneration.Zero: "Zero",
+    ql.DateGeneration.Twentieth: "Twentieth",
+    ql.DateGeneration.TwentiethIMM: "TwentiethIMM",
+    ql.DateGeneration.ThirdWednesday: "ThirdWednesday",
+    ql.DateGeneration.OldCDS: "OldCDS",
+    ql.DateGeneration.CDS: "CDS",
+    ql.DateGeneration.CDS2015: "CDS2015",
+}
+_STR_TO_RULE = {v: k for k, v in _RULE_TO_STR.items() if v != 9999}
+
+def schedule_to_json(s: Optional[ql.Schedule]) -> Optional[Dict[str, Any]]:
+    """
+    Encode a QuantLib Schedule. We always include the explicit 'dates' array so
+    round-tripping never depends on rule/tenor reconstruction.
+    """
+    if s is None:
+        return None
+
+    # Extract dates as ISO strings
+    try:
+        dates_iso = [_ql_date_to_iso(d) for d in list(s.dates())]
+    except Exception:
+        # Some SWIG builds require iterating via size()/date(i)
+        dates_iso = [_ql_date_to_iso(s.date(i)) for i in range(s.size())]
+
+    payload: Dict[str, Any] = {
+        "dates": dates_iso,
+    }
+
+    # Include helpful metadata when available (not required for decoding)
+    try:
+        payload["calendar"] = calendar_to_json(s.calendar())
+    except Exception:
+        pass
+    try:
+        payload["business_day_convention"] = bdc_to_json(int(s.businessDayConvention()))
+    except Exception:
+        pass
+    try:
+        payload["termination_business_day_convention"] = bdc_to_json(int(s.terminationDateConvention()))
+    except Exception:
+        pass
+    try:
+        payload["end_of_month"] = bool(s.endOfMonth())
+    except Exception:
+        pass
+    try:
+        payload["tenor"] = period_to_json(s.tenor())
+    except Exception:
+        pass
+    try:
+        rule = s.rule()
+        payload["rule"] = _RULE_TO_STR.get(int(rule), int(rule))
+    except Exception:
+        pass
+
+    return payload
+
+
+def schedule_from_json(v: Union[None, ql.Schedule, Dict[str, Any], List[str], List[ql.Date]]) -> Optional[ql.Schedule]:
+    """
+    Decode a schedule. Supported forms:
+      - None
+      - ql.Schedule (returned as-is)
+      - {"dates":[...], "calendar":{...}, "business_day_convention":"Following", ...}
+      - ["2025-01-15", "2025-02-12", ...]  (ISO date list)
+      - [ql.Date(...), ...]                 (rare, but supported)
+    For explicit-date payloads we build: ql.Schedule(DateVector, calendar, bdc).
+    """
+    if v is None or isinstance(v, ql.Schedule):
+        return v
+
+    # List forms (explicit dates)
+    if isinstance(v, list):
+        if not v:
+            return ql.Schedule()  # empty schedule
+        # Accept ISO strings or ql.Date
+        date_vec = ql.DateVector()
+        if isinstance(v[0], ql.Date):
+            for d in v:
+                date_vec.push_back(d)
+        else:
+            for s in v:
+                date_vec.push_back(_iso_to_ql_date(str(s)))
+        # Defaults are conservative; your model field carries calendar/bdc anyway
+        cal = ql.NullCalendar()
+        bdc = ql.Following
+        return ql.Schedule(date_vec, cal, bdc)
+
+    # Dict form
+    if isinstance(v, dict):
+        dates = v.get("dates")
+        if dates:
+            date_vec = ql.DateVector()
+            # Accept both ISO strings and ql.Date in the list
+            for x in dates:
+                if isinstance(x, ql.Date):
+                    date_vec.push_back(x)
+                else:
+                    date_vec.push_back(_iso_to_ql_date(str(x)))
+            cal_json = v.get("calendar", {"name": "NullCalendar"})
+            cal = calendar_from_json(cal_json)
+            bdc_json = v.get("business_day_convention", "Following")
+            bdc = bdc_from_json(bdc_json)
+            return ql.Schedule(date_vec, cal, bdc)
+
+        # Optional: support rule-based reconstruction if no explicit dates provided
+        start = v.get("start")
+        end = v.get("end")
+        tenor = v.get("tenor")
+        if start and end and tenor:
+            cal = calendar_from_json(v.get("calendar", {"name": "TARGET"}))
+            bdc = bdc_from_json(v.get("business_day_convention", "Following"))
+            term_bdc = bdc_from_json(v.get("termination_business_day_convention", bdc))
+            rule_val = v.get("rule", "Forward")
+            if isinstance(rule_val, str):
+                rule = _STR_TO_RULE.get(rule_val, ql.DateGeneration.Forward)
+            else:
+                rule = int(rule_val)
+            eom = bool(v.get("end_of_month", False))
+            first_date = v.get("first_date")
+            next_to_last = v.get("next_to_last_date")
+
+            sd = _iso_to_ql_date(str(start))
+            ed = _iso_to_ql_date(str(end))
+            ten = ql.Period(str(tenor))
+            fd = _iso_to_ql_date(str(first_date)) if first_date else ql.Date()
+            ntl = _iso_to_ql_date(str(next_to_last)) if next_to_last else ql.Date()
+
+            return ql.Schedule(sd, ed, ten, cal, bdc, term_bdc, rule, eom, fd, ntl)
+
+    raise TypeError(f"Cannot decode Schedule from {type(v).__name__}")
 
 # ----------------------------- ql.IborIndex ----------------------------------
 

@@ -81,9 +81,10 @@ def test_tiie_swap():
         make_tiie_28d_index,
     )
     from src.utils import to_ql_date
+    import pytz
 
     # --- Build the original swap ---
-    trade_date = dt.date(2025, 9, 6)  # valuation date (T)
+    trade_date = dt.datetime(2025, 9, 15,tzinfo=pytz.utc)  # valuation date (T)
     swap = TIIESwap(
         notional=100_000_000,
         start_date=trade_date,              # we’ll move to spot internally

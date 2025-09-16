@@ -7,7 +7,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from pydantic import BaseModel, Field, field_validator
 
-from .base_instrument import Instrument  # runtime_checkable Protocol: requires .price() -> float
+from .base_instrument import InstrumentModel as Instrument  # runtime_checkable Protocol: requires .price() -> float
 
 from typing import Type, Mapping
 from .european_option import EuropeanOption

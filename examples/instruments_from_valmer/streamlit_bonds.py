@@ -28,13 +28,13 @@ from examples.alm.ux_utils import register_theme, plot_par_yield_curve
 
 from src.instruments.position import Position,portfolio_stats
 from src.utils import to_py_date,to_ql_date
-from ui.curves.bumping import build_curves_for_ui as build_bumped_curves, KEYRATE_GRID_TIIE, BumpSpec
-from ui.components.curve_bump import curve_bump_controls
+from dashboards.curves.bumping import build_curves_for_ui as build_bumped_curves, KEYRATE_GRID_TIIE, BumpSpec
+from dashboards.components.curve_bump import curve_bump_controls
 
 # Pagination-enabled NPV table (new helper you’ll add below)
-from ui.components.npv_table import st_position_npv_table_paginated
-from ui.components.valuation_inputs import valuation_controls
-from ui.components.position_loader import (
+from dashboards.components.npv_table import st_position_npv_table_paginated
+from dashboards.components.valuation_inputs import valuation_controls
+from dashboards.components.position_loader import (
     position_source_input, instantiate_position
 )
 

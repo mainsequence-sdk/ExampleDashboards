@@ -11,7 +11,7 @@ import QuantLib as ql
 from src.pricing_models.indices import build_tiie_zero_curve_from_valmer
 
 
-KEYRATE_GRID_TIIE: Tuple[str, ...] = ("28D", "91D", "182D", "1Y", "2Y", "3Y", "5Y", "7Y", "10Y")
+KEYRATE_GRID_TIIE: Tuple[str, ...] = ("28D", "91D", "182D", "1Y", "2Y", "3Y", "5Y", "7Y", "10Y","20Y","30Y")
 
 
 @dataclass(frozen=True)

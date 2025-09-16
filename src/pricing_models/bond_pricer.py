@@ -1,7 +1,7 @@
 # src/pricing_models/bond_pricer.py
 import QuantLib as ql
 from typing import List, Dict, Any, Optional
-from src.data_interface import APIDataNode
+from src.data_interface import data_interface
 from src.utils import to_ql_date
 import datetime
 import matplotlib.pyplot as plt
@@ -11,12 +11,11 @@ def _map_daycount(dc: str) -> ql.DayCounter:
     s = (dc or '').upper()
     if s.startswith('30/360'):
         return ql.Thirty360(ql.Thirty360.USA)
-    if s in ('ACT/365','ACT/365F','ACTUAL/365','ACTUAL/365F'):
+    if s in ('ACT/365', 'ACT/365F', 'ACTUAL/365', 'ACTUAL/365F'):
         return ql.Actual365Fixed()
-    if s in ('ACT/ACT','ACTUAL/ACTUAL'):
+    if s in ('ACT/ACT', 'ACTUAL/ACTUAL'):
         return ql.ActualActual()
     return ql.Thirty360(ql.Thirty360.USA)
-
 
 
 def build_discount_curve_from_bonds(calculation_date: ql.Date) -> ql.YieldTermStructureHandle:
@@ -27,7 +26,7 @@ def build_discount_curve_from_bonds(calculation_date: ql.Date) -> ql.YieldTermSt
       - type == "bond": fixed-rate bond quoted by clean price -> FixedRateBondHelper.
     """
     print("Building discount curve from 'discount_bond_curve' (days_to_maturity)...")
-    market: Dict[str, Any] = APIDataNode.get_historical_data("discount_bond_curve", {"USD_bond_market": {}})
+    market: Dict[str, Any] = data_interface.get_historical_data("discount_bond_curve", {"USD_bond_market": {}})
     curve_nodes: List[Dict[str, Any]] = market["curve_nodes"]
 
     calendar = ql.TARGET()
@@ -37,13 +36,13 @@ def build_discount_curve_from_bonds(calculation_date: ql.Date) -> ql.YieldTermSt
 
     for node in curve_nodes:
         ntype = node["type"].lower()
-        days  = int(node["days_to_maturity"])
+        days = int(node["days_to_maturity"])
         maturity = calendar.advance(calculation_date, days, ql.Days)
 
-        if ntype in ("zcb","zero","zero_coupon"):
-            zr = float(node["yield"])                  # annual zero yield
-            T  = dc365.yearFraction(calculation_date, maturity)
-            clean_price = 100.0 / ((1.0 + zr) ** T)    # price per 100
+        if ntype in ("zcb", "zero", "zero_coupon"):
+            zr = float(node["yield"])  # annual zero yield
+            T = dc365.yearFraction(calculation_date, maturity)
+            clean_price = 100.0 / ((1.0 + zr) ** T)  # price per 100
 
             # Build a ZeroCouponBond instrument and wrap it with a generic BondHelper
             zcb = ql.ZeroCouponBond(
@@ -57,10 +56,10 @@ def build_discount_curve_from_bonds(calculation_date: ql.Date) -> ql.YieldTermSt
 
         elif ntype == "bond":
             coupon = float(node["coupon"])
-            clean  = float(node["clean_price"])        # per 100
-            freq   = ql.Period(node.get("frequency", "6M"))
-            dcc    = _map_daycount(node.get("day_count", "30/360"))
-            issue  = calculation_date                   # mock issue = today
+            clean = float(node["clean_price"])  # per 100
+            freq = ql.Period(node.get("frequency", "6M"))
+            dcc = _map_daycount(node.get("day_count", "30/360"))
+            issue = calculation_date  # mock issue = today
 
             sched = ql.Schedule(issue, maturity, freq, calendar,
                                 ql.Unadjusted, ql.Unadjusted,
@@ -81,13 +80,13 @@ def build_discount_curve_from_bonds(calculation_date: ql.Date) -> ql.YieldTermSt
 
 
 def plot_zero_coupon_curve(
-    calculation_date: ql.Date | datetime.date,
-    max_years: int = 30,
-    step_months: int = 3,
-    compounding = ql.Continuous,   # enums are ints; no type hint
-    frequency  = ql.Annual,        # enums are ints; no type hint
-    show: bool = True,
-    ax: Optional[plt.Axes] = None,
+        calculation_date: ql.Date | datetime.date,
+        max_years: int = 30,
+        step_months: int = 3,
+        compounding=ql.Continuous,  # enums are ints; no type hint
+        frequency=ql.Annual,  # enums are ints; no type hint
+        show: bool = True,
+        ax: Optional[plt.Axes] = None,
 ) -> tuple[list[float], list[float]]:
     """
     Plot the zero-coupon (spot) curve implied by the bond discount curve.
@@ -118,7 +117,7 @@ def plot_zero_coupon_curve(
 
     # build sampling grid
     tenors_years: list[float] = []
-    zero_rates:   list[float] = []
+    zero_rates: list[float] = []
 
     months = 0
     while months <= max_years * 12:
@@ -144,17 +143,18 @@ def plot_zero_coupon_curve(
 
     return tenors_years, zero_rates
 
+
 def create_fixed_rate_bond(
-    calculation_date: ql.Date,
-    face: float,
-    issue_date: ql.Date,
-    maturity_date: ql.Date,
-    coupon_rate: float,
-    coupon_frequency: ql.Period,
-    day_count: ql.DayCounter,
-    calendar: ql.Calendar = ql.TARGET(),
-    business_day_convention: int = ql.Following,   # enums are ints in the Python wrapper
-    settlement_days: int = 2
+        calculation_date: ql.Date,
+        face: float,
+        issue_date: ql.Date,
+        maturity_date: ql.Date,
+        coupon_rate: float,
+        coupon_frequency: ql.Period,
+        day_count: ql.DayCounter,
+        calendar: ql.Calendar = ql.TARGET(),
+        business_day_convention: int = ql.Following,  # enums are ints in the Python wrapper
+        settlement_days: int = 2
 ) -> ql.FixedRateBond:
     """Construct and engine-attach."""
     ql.Settings.instance().evaluationDate = calculation_date
@@ -173,20 +173,22 @@ def create_fixed_rate_bond(
 
 
 def create_floating_rate_bond_with_curve(
-    *,
-    calculation_date: ql.Date,
-    face: float,
-    issue_date: ql.Date,
-    maturity_date: ql.Date,
-    floating_rate_index: ql.IborIndex,
-    spread: float = 0.0,
-    coupon_frequency: ql.Period | None = None,
-    day_count: ql.DayCounter | None = None,
-    calendar: ql.Calendar | None = None,
-    business_day_convention: int = ql.Following,
-    settlement_days: int = 2,
-    curve: ql.YieldTermStructureHandle,
-    seed_past_fixings_from_curve: bool = True,
+        *,
+        calculation_date: ql.Date,
+        face: float,
+        issue_date: ql.Date,
+        maturity_date: ql.Date,
+        floating_rate_index: ql.IborIndex,
+        spread: float = 0.0,
+        coupon_frequency: ql.Period | None = None,
+        day_count: ql.DayCounter | None = None,
+        calendar: ql.Calendar | None = None,
+        business_day_convention: int = ql.Following,
+        settlement_days: int = 2,
+        curve: ql.YieldTermStructureHandle,
+        seed_past_fixings_from_curve: bool = True,
+        discount_curve: Optional[ql.YieldTermStructureHandle] = None,
+        schedule: Optional[ql.Schedule] = None,
 ) -> ql.FloatingRateBond:
     """
     Build/prices a floating-rate bond like your swap-with-curve:
@@ -219,18 +221,33 @@ def create_floating_rate_bond_with_curve(
     freq = coupon_frequency or pricing_index.tenor()
     dc = day_count or pricing_index.dayCounter()
 
-
-
     eff_start = issue_date
     eff_end = maturity_date
 
-
     # --------- Schedule ----------
-    schedule = ql.Schedule(
-        eff_start, eff_end, freq, cal,
-        business_day_convention, business_day_convention,
-        ql.DateGeneration.Forward, False
-    )
+    if schedule is None:
+        schedule = ql.Schedule(
+            eff_start, eff_end, freq, cal,
+            business_day_convention, business_day_convention,
+            ql.DateGeneration.Forward, False
+        )
+    # else:
+    #     has_periods = schedule.size() > 1
+    #
+    #     if not has_periods:
+    #         # Redemption-only: use ZeroCouponBond
+    #         zcb = ql.ZeroCouponBond(
+    #             settlement_days,
+    #             calendar,
+    #             face,  # redemption notional per 100 original
+    #             schedule.date(0) if schedule.size() == 1 else issue_date,  # maturity date
+    #             payment_convention,
+    #             100.0,  # redemption (% of face)
+    #             issue_date
+    #         )
+    #         zcb.setPricingEngine(ql.DiscountingBondEngine(curve))
+    #         return zcb
+    #
 
     # --------- Instrument ----------
     bond = ql.FloatingRateBond(
@@ -241,11 +258,11 @@ def create_floating_rate_bond_with_curve(
         dc,
         business_day_convention,
         pricing_index.fixingDays(),
-        [1.0],             # gearings
-        [spread],          # spreads
-        [], [],            # caps, floors
-        False,             # inArrears
-        100.0,             # redemption
+        [1.0],  # gearings
+        [spread],  # spreads
+        [], [],  # caps, floors
+        False,  # inArrears
+        100.0,  # redemption
         issue_date
     )
 
@@ -288,22 +305,28 @@ def create_floating_rate_bond_with_curve(
                     pricing_index.addFixing(fix, rate_to_add)
 
     # --------- Pricing engine ----------
-    bond.setPricingEngine(ql.DiscountingBondEngine(curve))
+    if discount_curve is not None:
+        test_discount_handle = ql.YieldTermStructureHandle(discount_curve)
+        test_bond_engine = ql.DiscountingBondEngine(test_discount_handle)
+        bond.setPricingEngine(test_bond_engine)
+
+    else:
+        bond.setPricingEngine(ql.DiscountingBondEngine(curve))
     return bond
 
 
 def create_floating_rate_bond(
-    calculation_date: ql.Date,
-    face: float,
-    issue_date: ql.Date,
-    maturity_date: ql.Date,
-    floating_rate_index: ql.IborIndex,
-    spread: float = 0.0,
-    coupon_frequency: ql.Period = None,
-    day_count: ql.DayCounter = None,
-    calendar: ql.Calendar = ql.TARGET(),
-    business_day_convention: int = ql.Following,
-    settlement_days: int = 2
+        calculation_date: ql.Date,
+        face: float,
+        issue_date: ql.Date,
+        maturity_date: ql.Date,
+        floating_rate_index: ql.IborIndex,
+        spread: float = 0.0,
+        coupon_frequency: ql.Period = None,
+        day_count: ql.DayCounter = None,
+        calendar: ql.Calendar = ql.TARGET(),
+        business_day_convention: int = ql.Following,
+        settlement_days: int = 2
 ) -> ql.FloatingRateBond:
     """Construct a floating rate bond and attach pricing engine."""
     ql.Settings.instance().evaluationDate = calculation_date
@@ -329,8 +352,8 @@ def create_floating_rate_bond(
 
     # Create floating rate bond with spread
     bond = ql.FloatingRateBond(
-        settlement_days, face, schedule, 
-        index_with_curve, day_count, 
+        settlement_days, face, schedule,
+        index_with_curve, day_count,
         business_day_convention, settlement_days,
         [1.0],  # gearings (multiplier for the index rate)
         [spread],  # spreads

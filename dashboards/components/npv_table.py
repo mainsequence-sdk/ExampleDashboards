@@ -164,14 +164,15 @@ def st_paginated_df(df: pd.DataFrame,
             "Details", help="Open Asset Detail", display_text="Open"
         )
 
+
+
     st.dataframe(
         page_df,
         use_container_width=True,
         hide_index=True,
-        column_config=col_config
+        column_config=col_config,
+        key=f"{key}_table"
     )
-
-    st.dataframe(page_df, use_container_width=True, hide_index=True, column_config=col_config)
 
     st.download_button("Download CSV (filtered)", data=view.to_csv(index=False).encode("utf-8"),
                        file_name="npv_table_filtered.csv", mime="text/csv", key=f"{key}_dl")

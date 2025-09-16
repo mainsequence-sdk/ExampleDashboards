@@ -11,7 +11,7 @@ if str(ROOT.parent.parent) not in sys.path:
 
 from mainsequence.dashboards.streamlit.scaffold import AppConfig, run_app
 from mainsequence.dashboards.streamlit.core.registry import autodiscover
-from ui.fixed_income_app.context import build_context_for_scaffold, AppContext
+from dashboards.fixed_income_app.context import  AppContext,build_context
 
 # --- Route selection: asset detail only reachable via query param -------------
 def _route_selector(qp) -> str:
@@ -32,12 +32,20 @@ autodiscover("ui.fixed_income_app.views")
 
 # Build the app config and run (no logo/icon passed; scaffold supplies defaults)
 cfg = AppConfig(
-    title="Base Dashboard",
-    build_context=build_context_for_scaffold,
+    title="Fixed Income Position Dashboard",
+    build_context=lambda ss: _build_context_route_aware(ss),
     route_selector=_route_selector,
     render_header=_render_header,
     init_session=_init_session,
     default_page="curve_positions",
 )
+def _build_context_route_aware(session_state) -> AppContext:
+    """Build a lighter context when hitting /?asset_id=... directly."""
+    cfg_path = session_state.get("cfg_path")
+    route = _route_selector(st.query_params)
+    mode = "asset_detail" if route == "asset_detail" else "full"
+    ctx, _ = build_context(cfg_path, mode=mode)  # <— build_context must accept mode
+    return ctx
+
 
 run_app(cfg)

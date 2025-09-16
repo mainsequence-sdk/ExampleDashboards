@@ -42,9 +42,9 @@ from examples.alm.ux_utils import (
 
 from src.instruments.position import Position,npv_table
 from src.utils import to_ql_date
-from ui.curves.bumping import  build_curves_for_ui as build_bumped_curves, KEYRATE_GRID_TIIE, BumpSpec
-from ui.components.curve_bump import curve_bump_controls
-from ui.components.npv_table import st_position_npv_table_paginated
+from dashboards.curves.bumping import  build_curves_for_ui as build_bumped_curves, KEYRATE_GRID_TIIE, BumpSpec
+from dashboards.components.curve_bump import curve_bump_controls
+from dashboards.components.npv_table import st_position_npv_table_paginated
 
 # ---------- Streamlit page ----------
 st.set_page_config(page_title="ALM Cockpit", layout="wide")

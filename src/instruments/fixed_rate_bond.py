@@ -13,8 +13,8 @@ from .json_codec import (
     calendar_to_json, calendar_from_json,
 )
 from pydantic import BaseModel, Field, PrivateAttr, field_serializer, field_validator
-
-class FixedRateBond(BaseModel,JSONMixin):
+from .base_instrument import InstrumentModel
+class FixedRateBond(InstrumentModel):
     """Plain-vanilla fixed-rate bond."""
 
     face_value: float = Field(

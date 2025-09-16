@@ -4,12 +4,12 @@ from typing import Optional, Literal
 import QuantLib as ql
 from pydantic import BaseModel, Field, PrivateAttr
 
-from src.data_interface import APIDataNode, DateInfo
+from src.data_interface import data_interface, DateInfo
 from src.pricing_models.black_scholes import create_bsm_model
 from src.utils import to_ql_date
-from .json_codec import JSONMixin  # NEW
+from .base_instrument import InstrumentModel
 
-class EuropeanOption(BaseModel,JSONMixin):
+class EuropeanOption(InstrumentModel):
     """European option priced with Black–Scholes–Merton."""
 
     underlying: str = Field(
@@ -39,7 +39,7 @@ class EuropeanOption(BaseModel,JSONMixin):
     def _setup_pricing_components(self) -> None:
         # 1) market data
         asset_range_map = {self.underlying: DateInfo(start_date=self.calculation_date)}
-        md = APIDataNode.get_historical_data("equities_daily", asset_range_map)
+        md = data_interface.get_historical_data("equities_daily", asset_range_map)
         spot, vol, r, q = md["spot_price"], md["volatility"], md["risk_free_rate"], md["dividend_yield"]
 
         # 2) dates

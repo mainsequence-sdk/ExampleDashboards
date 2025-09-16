@@ -1,10 +1,17 @@
-from typing import Protocol, runtime_checkable
+# src/instruments/base_instrument.py
+from typing import Protocol, runtime_checkable, Optional
+from pydantic import BaseModel, Field
+from .json_codec import JSONMixin
 
-@runtime_checkable
-class Instrument(Protocol):
+class InstrumentModel(BaseModel, JSONMixin):
     """
-    Any object with a .price() -> float is considered a derivative instrument.
-    Using a Protocol avoids metaclass conflicts with Pydantic BaseModel.
+    Common base for all Pydantic instrument models.
+    Adds a shared optional 'main_sequence_uid' field and shared config.
     """
-    def price(self) -> float: ...
+    main_sequence_uid: Optional[str] = Field(
+        default=None,
+        description="Optional UID linking this instrument to a main sequence record."
+    )
 
+    # Keep your existing behavior (QuantLib types, etc.)
+    model_config = {"arbitrary_types_allowed": True}

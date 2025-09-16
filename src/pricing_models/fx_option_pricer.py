@@ -1,5 +1,5 @@
 import QuantLib as ql
-from src.data_interface import APIDataNode, DateInfo
+from src.data_interface import data_interface, DateInfo
 
 
 def create_fx_garman_kohlhagen_model(
@@ -78,7 +78,7 @@ def get_fx_market_data(currency_pair: str, calculation_date) -> dict:
     
     # Fetch market data using the data interface
     asset_range_map = {currency_pair: DateInfo(start_date=calculation_date)}
-    market_data = APIDataNode.get_historical_data("fx_options", asset_range_map)
+    market_data = data_interface.get_historical_data("fx_options", asset_range_map)
     
     return {
         "spot_fx_rate": market_data["spot_fx_rate"],
