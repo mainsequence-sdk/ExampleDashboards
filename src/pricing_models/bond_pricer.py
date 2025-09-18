@@ -266,43 +266,6 @@ def create_floating_rate_bond_with_curve(
         issue_date
     )
 
-    # --------- Seed past/today fixings from this same curve ----------
-    if seed_past_fixings_from_curve:
-        for cf in bond.cashflows():
-            cup = ql.as_floating_rate_coupon(cf)
-            if cup is None:
-                continue
-            fix = cup.fixingDate()
-            if fix <= calculation_date:
-                try:
-                    # If a real fixing exists already, leave it
-                    _ = pricing_index.fixing(fix)
-                except RuntimeError:
-                    rate_found = False
-                    rate_to_add = None
-
-                    # Fallback: Loop backwards up to 10 business days to find the last available rate.
-                    for days_back in range(1, 11):  # This will loop from 1 to 10
-                        lookback_date = calendar.advance(fix, -days_back, ql.Days)
-                        try:
-                            rate_to_add = pricing_index.fixing(lookback_date)
-                            # If we find a rate, store it, mark it as found, and exit the loop.
-                            rate_found = True
-                            break
-                        except RuntimeError:
-                            # If no fixing exists for this lookback_date, continue to the next day.
-                            continue
-
-                    # After the loop, check if we were successful.
-                    if not rate_found:
-                        # If we looped 10 times and found nothing, raise a clear error.
-                        raise RuntimeError(
-                            f"CRITICAL: Could not find a valid fixing for the required date {fix.ISO()} "
-                            f"within the 10-business-day lookback period."
-                        )
-
-                    # If a rate was found, add it for the *original* required fixing date.
-                    pricing_index.addFixing(fix, rate_to_add)
 
     # --------- Pricing engine ----------
     if discount_curve is not None:

@@ -11,14 +11,30 @@ from tqdm import tqdm
 from contextlib import contextmanager
 
 from src.instruments import PositionLine, Position
-from src.pricing_models.indices import build_tiie_zero_curve_from_valmer, make_tiie_index
+from src.pricing_models.indices import build_zero_curve
 from src.instruments.floating_rate_bond import FloatingRateBond
+from src.settings import (TIIE_28_UID,TIIE_91_UID,TIIE_182_UID,TIIE_OVERNIGHT_UID,CETE_28_UID,
+CETE_182_UID
+                          )
+import pytz
+import json
+from pathlib import Path
 
 # =============================================================================
 # Configuration toggles for “coupon count” to match the sheet convention
 # =============================================================================
 COUNT_FROM_SETTLEMENT: bool = True     # vendor sheets often count from settlement (T+1/T+2)
 INCLUDE_REF_DATE_EVENTS: bool = False  # treat flows ON ref date as already occurred (QL default)
+
+SUBYACENTE_TO_INDEX_MAP = {"TIIE28": TIIE_28_UID,
+                           "TIIE182": TIIE_182_UID,
+                           "TIIE91": TIIE_91_UID,
+                           "TIIE28 EQUIV 182": TIIE_182_UID,
+                           "Tasa TIIE Fondeo 1D": TIIE_OVERNIGHT_UID,
+                           "CETE_28": CETE_28_UID,
+                           "CETE28": CETE_28_UID,
+                           "CETE182": CETE_182_UID,
+                           }
 
 # =============================================================================
 # Small dataclass for the built instrument
@@ -594,15 +610,14 @@ def build_qll_floater_from_row(
     ql.Settings.instance().includeReferenceDateEvents = INCLUDE_REF_DATE_EVENTS
     ql.Settings.instance().enforceTodaysHistoricFixings = False
 
-    # --- index linked to your curve ---
-    tiie_index = make_tiie_index(curve)
+
 
     # --- schedule that forces remaining coupons to match the sheet ---
     explicit_schedule = compute_sheet_schedule_force_match(
         row,
         calendar=calendar,
         bdc=bdc,
-        default_freq_days=parse_coupon_days(row.get("FREC. CPN"), 28),
+        default_freq_days=parse_coupon_period(row.get("FREC. CPN")),
         settlement_days=settlement_days,  # ← add this
         count_from_settlement=COUNT_FROM_SETTLEMENT,  # ← and this (keeps your toggle)
         include_boundary_for_count=True,  # ← ven
@@ -610,21 +625,23 @@ def build_qll_floater_from_row(
 
 
 
+
     # --- your model (ensure it supports 'schedule=...') ---
     frb = FloatingRateBond(
         face_value=face_adj,
-        floating_rate_index=tiie_index,
+        floating_rate_index_name=SUBYACENTE_TO_INDEX_MAP[row["REGLA CUPON"]],
         spread=spread_decimal,
         issue_date=issue_date,
         maturity_date=maturity_date,
-        coupon_frequency=parse_coupon_period(row.get("FREC. CPN"), 28),
+        coupon_frequency=parse_coupon_period(row.get("FREC. CPN")),
         day_count=dc,
         calendar=calendar,
         business_day_convention=bdc,
         settlement_days=settlement_days,
-        valuation_date=eval_date,
+
         schedule=explicit_schedule,        # <— IMPORTANT
     )
+    frb.set_valuation_date( eval_date,)
     # --- assert/diagnose + (optionally) auto-fix the front boundary ---
     # try:
     #     frb._setup_pricer(with_yield=with_yield)
@@ -708,6 +725,11 @@ def extract_future_cashflows(
 # =============================================================================
 # Main pricing loop
 # =============================================================================
+
+
+
+
+
 def run_price_check(
     TIIE_BONDS: pd.DataFrame,
     *,
@@ -717,22 +739,26 @@ def run_price_check(
 ) -> Tuple[pd.DataFrame, Dict[str, FloatingRateBond]]:
     results: List[Dict[str, Any]] = []
     instrument_map: Dict[str, FloatingRateBond] = {}
-    curve_cache: Dict[dt.date, ql.YieldTermStructure] = {}
+    curve_cache: Dict[(dt.date,str), ql.YieldTermStructure] = {}
 
     for ix, row in tqdm(TIIE_BONDS.iterrows(), desc="building instruments"):
         eval_date = parse_val_date(row["FECHA"])
-
+        eval_date=dt.datetime(eval_date.year,eval_date.month,eval_date.day,tzinfo=pytz.utc)
         # Build/reuse curve for that eval date
-        if eval_date not in curve_cache:
-            curve_cache[eval_date] = build_tiie_zero_curve_from_valmer(qld(eval_date))
-        curve = curve_cache[eval_date]
+        index_uid = SUBYACENTE_TO_INDEX_MAP[row["SUBYACENTE"]]
+        cached_id=(eval_date,index_uid)
+        if cached_id not in curve_cache:
+
+            curve_cache[cached_id] = build_zero_curve(target_date=eval_date,
+                                                      index_identifier=index_uid)
+        curve = curve_cache[cached_id]
 
         if row["CUPON ACTUAL"] == 0.0 or row["CUPONES X COBRAR"] == 0:
             continue
 
         # Build bond (explicit schedule)
         built = build_qll_floater_from_row(
-            row, curve, SPREAD_IS_PERCENT=SPREAD_IS_PERCENT,
+            row, curve,
             calendar=ql.Mexico(), dc=ql.Actual360(), bdc=ql.ModifiedFollowing, settlement_days=0,
         )
 
@@ -789,10 +815,10 @@ def run_price_check(
 
         results.append({
             "instrument_hash": built.bond.content_hash(),
-            "row": int(ix),
-            "EMISORA": row.get("EMISORA", ""),
-            "SERIE": row.get("SERIE", ""),
+
             "FECHA": eval_date,
+            "UID":f"{row['TIPO VALOR']}_{row['EMISORA']}_{row['SERIE']}",
+            "SUBYACENTE":row["SUBYACENTE"],
             "VALOR NOMINAL": float(row["VALOR NOMINAL"]),
             "SOBRETASA_in": float(row["SOBRETASA"]),
             "SOBRETASA_decimal": (float(row["SOBRETASA"]) / 100.0) if SPREAD_IS_PERCENT and not pd.isna(row["SOBRETASA"]) else float(row["SOBRETASA"] or 0.0),
@@ -813,28 +839,89 @@ def run_price_check(
             "DIAS TRANSC. CPN (model)": dias_transcurridos,
         })
 
-        instrument_map[built.bond.content_hash()] = built.bond
+        instrument_map[built.bond.content_hash()] = {"instrument":built.bond,"extra_market_info":{"yield":row["TASA DE RENDIMIENTO"]/100}}
 
     return pd.DataFrame(results), instrument_map
 
 
-# =============================================================================
-# Example driver
-# =============================================================================
-if __name__ == "__main__":
-    df = pd.read_excel("/home/jose/Downloads/VectorAnalitico24h_2025-08-27.xls")
+def build_position_from_sheet(
+    sheet_path: str | Path,
+    *,
+    notional_per_line: float = 100_000_000.0,
+    out_path: str | Path | None = None
+) -> Tuple[Position, Dict[str, Any], str]:
+    """
+    Build instruments from a vendor sheet and dump a 'position.json'-style file.
+    Returns (Position, cfg_dict, position_json_path, df_out_csv_path).
+    """
+    sheet_path = str(sheet_path)
+    df = pd.read_excel(sheet_path)
 
-    floating_tiie = df[(df["SUBYACENTE"] == "TIIE28") & (df["REGLA CUPON"] == "TIIE28")]
-    SPREAD_IS_PERCENT = True
+    floating_tiie  = df[df["SUBYACENTE"].astype(str).str.contains("TIIE", na=False)]
+    floating_cetes = df[df["SUBYACENTE"].astype(str).str.contains("CETE", na=False)]
+    all_floating   = pd.concat([floating_tiie, floating_cetes], axis=0, ignore_index=True)
 
-    df_out, instrument_map = run_price_check(floating_tiie, SPREAD_IS_PERCENT=SPREAD_IS_PERCENT)
+    df_out, instrument_map = run_price_check(all_floating)
     pd.set_option("display.float_format", lambda x: f"{x:,.6f}")
 
-    # Build a toy Position out of the best priced
-    best = df_out.sort_values("price_diff_bp", ascending=True).head(100)
-    position_instruments = {k: v for k, v in instrument_map.items() if k in best.instrument_hash.to_list()}
-    position_lines = [PositionLine(instrument=b, units=int(100_000_000 / b.price())) for b in position_instruments.values()]
+    # Pick best priced instruments
+    best = df_out.sort_values("price_diff_bp", ascending=True)
+    keep_ids = set(best["instrument_hash"].tolist())
+    position_instruments = {k: v for k, v in instrument_map.items() if k in keep_ids}
+
+    # Units scaled by price from the model
+    position_lines = [
+        PositionLine(
+            units=int(notional_per_line / b["instrument"].price()),
+            **b
+        )
+        for b in position_instruments.values()
+    ]
     position = Position(lines=position_lines)
+
+    # ---- THIS LINE (existing): build JSON dict --------------------------------
     dump = position.to_json_dict()
 
-    a = 5
+    # ---- NEW: write position.json immediately after 'dump = ...' --------------
+    # Choose a valuation date from the selected rows (fallback: today)
+    if not best.empty:
+        val_ts = pd.to_datetime(best["FECHA"].max())
+        if isinstance(val_ts, pd.Timestamp) and val_ts.tzinfo is not None:
+            val_ts = val_ts.tz_convert(None)
+        val_date = val_ts.date() if isinstance(val_ts, pd.Timestamp) else pd.to_datetime(val_ts).date()
+    else:
+        val_date = dt.date.today()
+
+    cfg = {
+        "valuation": {"valuation_date": val_date.isoformat()},
+        "position": dump
+    }
+
+    # Default output next to the app's expected file
+    out_path = Path(out_path) if out_path is not None else (Path(__file__).resolve().parent / "position.json")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(out_path, "w") as fh:
+        json.dump(cfg, fh, indent=2, default=str)
+
+    # ---- NEW: also dump df_out in the SAME location as position.json ----------
+    df_out_path = out_path.parent / "df_out.csv"
+    df_out.to_csv(df_out_path, index=False)
+
+    return position, cfg, str(out_path), str(df_out_path)
+
+
+# =============================================================================
+# CLI wrapper
+# =============================================================================
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description="Build Floating Rate instruments and write position.json")
+    parser.add_argument("--sheet", required=True, help="Path to vendor Excel (e.g., VectorAnalitico24h_YYYY-MM-DD.xls[x])")
+    parser.add_argument("--top", type=int, default=100, help="Top N instruments by |price_diff_bp|")
+    parser.add_argument("--out", type=str, default=str(Path(__file__).resolve().parent / "fixed_income_app" / "position.json"),
+                        help="Output path for position JSON")
+    parser.add_argument("--units_notional", type=float, default=100_000_000.0, help="Notional per instrument to compute units")
+    args = parser.parse_args()
+
+    pos, cfg, outp = build_position_from_sheet(args.sheet, top_n=args.top, notional_per_line=args.units_notional, out_path=args.out)
+    print(f"✓ Wrote {outp}  • instruments={len(pos.lines)}  • valuation_date={cfg['valuation']['valuation_date']}")

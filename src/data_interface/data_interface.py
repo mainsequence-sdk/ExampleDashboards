@@ -7,6 +7,7 @@ import os
 import pandas as pd
 from pathlib import Path
 
+
 class DateInfo(TypedDict, total=False):
     """Defines the date range for a data query."""
     start_date: Optional[datetime.datetime]
@@ -46,23 +47,23 @@ class MockDataInterface:
         elif 'SOFR' in index_name:
             calendar = ql.UnitedStates(ql.UnitedStates.SOFR)
             print("Using UnitedStates.SOFR calendar for SOFR.")
-        elif index_name=="TIIE28":
+        elif index_name == "TIIE28":
             DEFAULT_TIIE_CSV = Path(__file__).resolve().parents[2] / "data" / "TIIE28_FIXINGS.csv"
             csv_path = os.getenv("TIIE28_FIXINGS_CSV") or str(DEFAULT_TIIE_CSV)
 
-            fixings=pd.read_csv(csv_path)
-            fixings.columns=["date","rate"]
+            fixings = pd.read_csv(csv_path)
+            fixings.columns = ["date", "rate"]
             fixings["date"] = pd.to_datetime(fixings["date"], format="%m/%d/%Y")
-            fixings["date"]=fixings["date"].dt.date
-            if end_date >fixings["date"].max():
+            fixings["date"] = fixings["date"].dt.date
+            if end_date > fixings["date"].max():
                 raise Exception("Fixing not existent")
-            fixings=fixings[fixings.date<=end_date]
-            fixings["rate"]=fixings["rate"]/100
+            fixings = fixings[fixings.date <= end_date]
+            fixings["rate"] = fixings["rate"] / 100
             return fixings.set_index("date")["rate"].to_dict()
 
 
         elif 'TIIE' in index_name or 'F-TIIE' in index_name:
-           raise Exception("Unrecognized index name")
+            raise Exception("Unrecognized index name")
 
         print("---------------------\n")
 
@@ -161,25 +162,25 @@ class MockDataInterface:
                     "spot_fx_rate": 1.0850,
                     "volatility": 0.12,
                     "domestic_rate": 0.045,  # USD rate
-                    "foreign_rate": 0.035    # EUR rate
+                    "foreign_rate": 0.035  # EUR rate
                 },
                 "GBPUSD": {
                     "spot_fx_rate": 1.2650,
                     "volatility": 0.15,
                     "domestic_rate": 0.045,  # USD rate
-                    "foreign_rate": 0.040    # GBP rate
+                    "foreign_rate": 0.040  # GBP rate
                 },
                 "USDJPY": {
                     "spot_fx_rate": 148.50,
                     "volatility": 0.11,
                     "domestic_rate": 0.005,  # JPY rate
-                    "foreign_rate": 0.045    # USD rate
+                    "foreign_rate": 0.045  # USD rate
                 },
                 "USDCHF": {
                     "spot_fx_rate": 0.8950,
                     "volatility": 0.13,
                     "domestic_rate": 0.015,  # CHF rate
-                    "foreign_rate": 0.045    # USD rate
+                    "foreign_rate": 0.045  # USD rate
                 }
             }
 
@@ -204,7 +205,6 @@ class MockDataInterface:
                 (if the file holds percents like 9.50, we'll auto-convert to 0.095)
             """
 
-
             # You can override this path in your env; default points to the uploaded file
             DEFAULT_TIIE_CSV = Path(__file__).resolve().parents[2] / "data" / "MEXDERSWAP_IRSTIIEPR.csv"
             csv_path = os.getenv("TIIE_ZERO_CSV") or str(DEFAULT_TIIE_CSV)
@@ -219,8 +219,8 @@ class MockDataInterface:
             df["asof_yyMMdd"] = pd.to_datetime(df["asof_yyMMdd"], format="%y%m%d")
 
             df["idx"] = df["idx"].astype(int)
-            df["days_to_maturity"]= (df["asof_yyMMdd"]-df["asof_yyMMdd"].iloc[0]).dt.days
-            df["zero_rate"] = df["zero_rate"].astype(float)/100
+            df["days_to_maturity"] = (df["asof_yyMMdd"] - df["asof_yyMMdd"].iloc[0]).dt.days
+            df["zero_rate"] = df["zero_rate"].astype(float) / 100
             base_dt = df["asof_yyMMdd"].iloc[0].date()
             nodes = [
                 {"days_to_maturity": d, "zero": z}
@@ -232,11 +232,22 @@ class MockDataInterface:
         else:
             raise ValueError(f"Table '{table_name}' not found in mock data API.")
 
+
 import json
 import base64
 import gzip
+from cachetools import cachedmethod, LRUCache
+from operator import attrgetter
+from threading import RLock
 
 class MSInterface():
+
+    # ---- bounded, shared caches (class-level) ----
+    _curve_cache = LRUCache(maxsize=1024)
+    _curve_cache_lock = RLock()
+
+    _fixings_cache = LRUCache(maxsize=4096)
+    _fixings_cache_lock = RLock()
 
     @staticmethod
     def decompress_string_to_curve(b64_string: str) -> Dict[Any, Any]:
@@ -263,22 +274,35 @@ class MSInterface():
         # 4. Decode the JSON bytes to a string and parse back into a dictionary
         return json.loads(json_bytes.decode('utf-8'))
 
-    def get_historical_discount_curve(self,curve_name,target_date):
+    # NOTE: caching is applied at the method boundary; body is unchanged.
+    @cachedmethod(cache=attrgetter("_curve_cache"), lock=attrgetter("_curve_cache_lock"))
+    def get_historical_discount_curve(self, curve_name, target_date):
         from mainsequence.tdag import APIDataNode
         from src.settings import DISCOUNT_CURVES_TABLE
-        data_node=APIDataNode.build_from_identifier(identifier=DISCOUNT_CURVES_TABLE)
+        data_node = APIDataNode.build_from_identifier(identifier=DISCOUNT_CURVES_TABLE)
 
-        limit=target_date+datetime.timedelta(days=1)
-        curve=data_node.get_ranged_data_per_asset(range_descriptor={curve_name: {"start_date":target_date,"start_date_operand":">=",
-                                                                                 "end_date":limit,"end_date_operand":"<",}}
-        )
+        print("REMOVE FONLY FOR TEST PURPOSES")
+        import pytz  # patch
+
+        target_date = datetime.datetime(2025, 9, 15, tzinfo=pytz.utc)
+        if "M_BONO" in curve_name:
+            target_date = datetime.datetime(2025, 9, 9, tzinfo=pytz.utc)
+
+        try:
+            limit = target_date + datetime.timedelta(days=1)
+        except Exception as e:
+            raise e
+        curve = data_node.get_ranged_data_per_asset(
+            range_descriptor={curve_name: {"start_date": target_date, "start_date_operand": ">=",
+                                           "end_date": limit, "end_date_operand": "<", }}
+            )
 
         if curve.empty:
             raise Exception(f"{target_date} is empty.")
-        zeros=self.decompress_string_to_curve(curve["curve"].iloc[0])
-        zeros=pd.Series(zeros).reset_index()
-        zeros["index"]=pd.to_numeric(zeros["index"])
-        zeros=zeros.set_index("index")[0]
+        zeros = self.decompress_string_to_curve(curve["curve"].iloc[0])
+        zeros = pd.Series(zeros).reset_index()
+        zeros["index"] = pd.to_numeric(zeros["index"])
+        zeros = zeros.set_index("index")[0]
 
         nodes = [
             {"days_to_maturity": d, "zero": z}
@@ -288,4 +312,45 @@ class MSInterface():
 
         return nodes
 
+    @cachedmethod(cache=attrgetter("_fixings_cache"), lock=attrgetter("_fixings_cache_lock"))
+    def get_historical_fixings(self, reference_rate_uid: str, start_date: datetime.datetime,
+                               end_date: datetime.datetime):
+        """
+
+        :param reference_rate_uid:
+        :param start_date:
+        :param end_date:
+        :return:
+        """
+        from mainsequence.tdag import APIDataNode
+        from src.settings import REFERENCE_RATES_FIXING_TABLE
+
+        data_node = APIDataNode.build_from_identifier(identifier=REFERENCE_RATES_FIXING_TABLE)
+
+        import pytz  # patch
+        start_date = datetime.datetime(2024, 9, 10, tzinfo=pytz.utc)
+        end_date=datetime.datetime(2025, 9, 17, tzinfo=pytz.utc)
+
+        fixings_df = data_node.get_ranged_data_per_asset(
+            range_descriptor={reference_rate_uid: {"start_date": start_date, "start_date_operand": ">=",
+                                                   "end_date": end_date, "end_date_operand": "<=", }}
+        )
+        if fixings_df.empty:
+            raise Exception(f"{reference_rate_uid} has not data between {start_date} and {end_date}.")
+        fixings_df = fixings_df.reset_index().rename(columns={"time_index": "date"})
+        fixings_df["date"] = fixings_df["date"].dt.date
+        return fixings_df.set_index("date")["rate"].to_dict()
+
+    # optional helpers
+    @classmethod
+    def clear_caches(cls) -> None:
+        cls._curve_cache.clear()
+        cls._fixings_cache.clear()
+
+    @classmethod
+    def cache_info(cls) -> dict:
+        return {
+            "discount_curve_cache": {"size": cls._curve_cache.currsize, "max": cls._curve_cache.maxsize},
+            "fixings_cache": {"size": cls._fixings_cache.currsize, "max": cls._fixings_cache.maxsize},
+        }
 

@@ -28,7 +28,7 @@ def _init_session(ss) -> None:
     ss.setdefault("cfg_path", default_cfg)
 
 # Register all views in this package (side effects of @register_page)
-autodiscover("ui.fixed_income_app.views")
+autodiscover("dashboards.fixed_income_app.views")
 
 # Build the app config and run (no logo/icon passed; scaffold supplies defaults)
 cfg = AppConfig(

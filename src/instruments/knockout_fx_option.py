@@ -41,10 +41,7 @@ class KnockOutFXOption(InstrumentModel):
     rebate: float = Field(
         default=0.0, description="Rebate paid if option is knocked out (default: 0.0)."
     )
-    calculation_date: datetime.date = Field(
-        default_factory=datetime.date.today,
-        description="Valuation date used for pricing and Greeks."
-    )
+
 
     # Allow QuantLib types & keep runtime attrs out of the schema
     model_config = {"arbitrary_types_allowed": True}

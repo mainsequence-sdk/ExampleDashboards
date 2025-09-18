@@ -36,6 +36,8 @@ def _agg_net_cashflows(position: Position) -> pd.DataFrame:
         s = getattr(inst, "get_net_cashflows", None)
         if callable(s):
             ser = s()
+            if ser.empty:
+                continue
             if isinstance(ser, pd.Series):
                 df = ser.to_frame("amount").reset_index()
                 df = df.rename(columns={"index": "payment_date"}) if "payment_date" not in df.columns else df
@@ -85,7 +87,6 @@ class AppContext:
     cfg: Dict[str, Any]
     val_date: dt.date
     currency_symbol: str
-    index_hint: str
     ts_base: ql.YieldTermStructureHandle
     ts_bump: ql.YieldTermStructureHandle
     nodes_base: list[dict]
@@ -108,7 +109,7 @@ def build_context(config_path: str | Path | None = None, *, mode: str = "full") 
     )
 
     # Build curves ONCE (internal curve caches will also help on reruns)
-    ts_base, ts_bump, nodes_base, nodes_bump, index_hint = build_bumped_curves(qld(val_date), spec)
+    ts_base, ts_bump, nodes_base, nodes_bump = build_bumped_curves(qld(val_date), spec)
 
     # ---- FAST position creation (cached on file content) ----
     # parse the big JSON once and reuse the template
@@ -119,7 +120,7 @@ def build_context(config_path: str | Path | None = None, *, mode: str = "full") 
 
     # Build bumped position only when a page needs the whole thing
     if mode == "full":
-        from examples.alm.utils import get_bumped_position
+        from dashboards.curves.bumping import get_bumped_position
         bumped_position = get_bumped_position(position=position, bump_curve=ts_bump)
     else:
         bumped_position = position  # placeholder; asset_detail computes its own bumped value per-line
@@ -128,9 +129,10 @@ def build_context(config_path: str | Path | None = None, *, mode: str = "full") 
     carry_cutoff = val_date + dt.timedelta(days=default_days)
 
     ctx = AppContext(
-        cfg=cfg, val_date=val_date, currency_symbol=currency_symbol, index_hint=index_hint,
+        cfg=cfg, val_date=val_date, currency_symbol=currency_symbol,
         ts_base=ts_base, ts_bump=ts_bump, nodes_base=nodes_base, nodes_bump=nodes_bump,
-        position=position, bumped_position=bumped_position, carry_cutoff=carry_cutoff
+        position=position, bumped_position=bumped_position, carry_cutoff=carry_cutoff,
+
     )
     return ctx, spec
 

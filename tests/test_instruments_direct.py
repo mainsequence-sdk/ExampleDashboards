@@ -71,30 +71,29 @@ def test_tiie_swap():
     import datetime as dt
     import QuantLib as ql
 
-    from src.instruments.interest_rate_swap import TIIESwap
+    from src.instruments.interest_rate_swap import InterestRateSwap
     from src.pricing_models.swap_pricer import (
         debug_tiie_trade,
 
     )
     from src.pricing_models.indices import (
-        build_tiie_zero_curve_from_valmer,
-        make_tiie_28d_index,
+        get_index,build_zero_curve
     )
+    from src.settings import TIIE_28_UID
     from src.utils import to_ql_date
     import pytz
 
     # --- Build the original swap ---
     trade_date = dt.datetime(2025, 9, 15,tzinfo=pytz.utc)  # valuation date (T)
-    swap = TIIESwap(
+    swap = InterestRateSwap.from_tiie(
         notional=100_000_000,
         start_date=trade_date,              # we’ll move to spot internally
-        maturity_date=trade_date,           # ignored when tenor is provided
         tenor=ql.Period("364W"),
         fixed_rate=0.0780098200,            # 7.80098200% in DECIMAL
-        valuation_date=trade_date,
         float_leg_spread=0.0,
         # legs default to 28D / ACT/360 / ModFollowing / Mexico in TIIESwap
     )
+    swap.set_valuation_date(trade_date)
 
     # (Redundant but harmless; TIIESwap._setup_pricer also sets this)
     ql.Settings.instance().evaluationDate = to_ql_date(swap.valuation_date)
@@ -109,7 +108,9 @@ def test_tiie_swap():
 
     # --- JSON round-trip ---
     payload = swap.to_json()                 # dump to JSON string
-    swap2 = TIIESwap.from_json(payload)      # rebuild from JSON
+    swap2 = InterestRateSwap.from_json(payload)      # rebuild from JSON
+    swap2.set_valuation_date(trade_date)
+
 
     # Price rebuilt
     npv2 = swap2.price()
@@ -121,8 +122,8 @@ def test_tiie_swap():
 
     # --- Build the exact curve and index used by TIIESwap for debug output ---
     ql_val = to_ql_date(swap.valuation_date)
-    curve = build_tiie_zero_curve_from_valmer(ql_val)
-    tiie28 = make_tiie_28d_index(curve)
+    curve = build_zero_curve(target_date=swap.valuation_date,index_identifier=TIIE_28_UID)
+    tiie28 = get_index(name=TIIE_28_UID,target_date=swap.valuation_date,)
     debug_tiie_trade(ql_val, swap._swap, curve, tiie28)
 
     def prove_curve_anchor(curve: ql.YieldTermStructureHandle, ibor_index: ql.IborIndex | None = None):

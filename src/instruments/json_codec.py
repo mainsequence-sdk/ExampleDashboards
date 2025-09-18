@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, Optional, Union
 import QuantLib as ql
+import inspect  # <-- ADD
+
 from src.pricing_models.indices import get_index as _index_by_name
 import hashlib
 # ----------------------------- ql.Period -------------------------------------
@@ -74,49 +76,165 @@ def daycount_from_json(v: Union[str, ql.DayCounter]) -> ql.DayCounter:
 
 
 # ----------------------------- ql.Calendar -----------------------------------
+# We standardize on: {"name": "<QuantLib class name>", "market": <int optional>}
+# Example: {"name": "Mexico"}, {"name": "UnitedStates", "market": 1}
 
-# Keep a small, explicit map of calendars you use; easy to extend later.
-_CALENDAR_CTORS = {
-    "TARGET": ql.TARGET,
-    "NullCalendar": ql.NullCalendar,
-    "UnitedStates": ql.UnitedStates,   # needs .Market enum
-    "Mexico": ql.Mexico,               # needs .Market enum
-}
+def _build_calendar_display_factory() -> Dict[str, callable]:
+    """
+    Build a mapping: display name (Calendar::name()) -> zero-arg callable that
+    constructs a concrete ql.Calendar. Handles classes with Market enums too.
+    """
+    factory: Dict[str, callable] = {}
+
+    def _try_register(ctor):
+        try:
+            inst = ctor()
+            disp = inst.name()
+            factory.setdefault(disp, ctor)
+            return True
+        except Exception:
+            return False
+
+    for _, cls in inspect.getmembers(ql, predicate=inspect.isclass):
+        try:
+            if not issubclass(cls, ql.Calendar) or cls is ql.Calendar:
+                continue
+        except TypeError:
+            continue
+
+        # Case A: no-arg constructor (TARGET, Mexico, Turkey, ...)
+        _try_register(lambda c=cls: c())
+
+        # Case B: int-valued attributes (legacy Market enums on the class)
+        for attr_name, attr_val in inspect.getmembers(cls):
+            if attr_name.startswith("_"):
+                continue
+            if isinstance(attr_val, int):
+                _try_register(lambda c=cls, e=attr_val: c(e))
+
+        # Case C: nested Market enum classes (common style)
+        for attr_name, attr_val in inspect.getmembers(cls):
+            if not inspect.isclass(attr_val):
+                continue
+            if "market" in attr_name.lower():
+                for mname, mval in inspect.getmembers(attr_val):
+                    if mname.startswith("_"):
+                        continue
+                    if isinstance(mval, int):
+                        _try_register(lambda c=cls, e=mval: c(e))
+
+    return factory
+
+# Build once + case-insensitive mirror
+_CAL_DISP_FACTORY: Dict[str, callable] = _build_calendar_display_factory()
+_CAL_DISP_FACTORY_CI: Dict[str, callable] = {k.casefold(): v for k, v in _CAL_DISP_FACTORY.items()}
+
+def _calendar_from_display_name(display: str) -> ql.Calendar:
+    ctor = _CAL_DISP_FACTORY.get(display) or _CAL_DISP_FACTORY_CI.get(display.casefold())
+    if ctor is None:
+        raise ValueError(
+            f"Unsupported calendar display name {display!r}. "
+            f"Available: " + ", ".join(sorted(_CAL_DISP_FACTORY.keys())[:20]) +
+            ("..." if len(_CAL_DISP_FACTORY) > 20 else "")
+        )
+    return ctor()
+
+def _try_get_market(c: ql.Calendar) -> Optional[int]:
+    try:
+        return int(getattr(c, "market")())
+    except Exception:
+        return None
+
+def _normalize_calendar_to_class_and_market(cal: ql.Calendar) -> Dict[str, Any]:
+    """
+    Return the canonical JSON dict {"name": <class name>, "market": <int?>}
+    even if 'cal' is a base Calendar proxy. We achieve this by re-instantiating
+    a derived calendar from Calendar::name() (display name) when needed.
+    """
+    cls_name = cal.__class__.__name__
+    # If SWIG gives a base proxy ('Calendar'), derive a concrete instance via display name
+    if cls_name == "Calendar":
+        try:
+            derived = _calendar_from_display_name(cal.name())
+            name = derived.__class__.__name__
+            market = _try_get_market(derived)
+        except Exception:
+            # Fall back to best-effort: use display name as a string name (non-canonical)
+            # but caller's calendar_from_json can still accept it as a display name.
+            return {"name": cal.name()}
+    else:
+        name = cls_name
+        market = _try_get_market(cal)
+
+    out: Dict[str, Any] = {"name": name}
+    if market is not None:
+        out["market"] = market
+    return out
 
 def calendar_to_json(cal: ql.Calendar) -> Dict[str, Any]:
     """
-    Encode a Calendar as {"name": "TARGET"} or {"name": "UnitedStates", "market": 0}
-    (market is an int of the Enum value).
+    Encode a Calendar as canonical {"name": "<QuantLib class name>", "market": <int?>}.
+    Robust to base Calendar proxies returned by SWIG.
     """
-    name = cal.__class__.__name__
-    out: Dict[str, Any] = {"name": name}
-    # Some calendars expose a .market() accessor in SWIG; if so, include it.
-    try:
-        out["market"] = int(cal.market())
-    except Exception:
-        pass
-    return out
+    return _normalize_calendar_to_class_and_market(cal)
+
+def _calendar_from_class_and_market(name: str, market: Optional[int]) -> ql.Calendar:
+    """
+    Construct a calendar from a QuantLib class name + optional market.
+    Tries nested Market enums, then plain int, then no-arg.
+    """
+    cls = getattr(ql, name, None)
+    if cls is None or not inspect.isclass(cls):
+        raise ValueError(f"Unsupported calendar class {name!r}")
+    # Try with market if provided
+    if market is not None:
+        # Most calendars expose a nested Market enum:
+        try:
+            enum_cls = getattr(cls, "Market")
+            return cls(enum_cls(int(market)))
+        except Exception:
+            pass
+        # Some accept a raw int:
+        try:
+            return cls(int(market))
+        except Exception:
+            pass
+    # Fallback: no-arg constructor
+    return cls()
 
 def calendar_from_json(v: Union[Dict[str, Any], str, ql.Calendar]) -> ql.Calendar:
-    """Decode dict or string into a Calendar instance."""
+    """
+    Decode dict or string into a Calendar instance. Accepts:
+      - {"name": "<class name>", "market": <int?>}    (canonical)
+      - "<class name>"                                (canonical string form)
+      - {"name": "<display name>"} / "<display name>" (legacy interop)
+    """
     if isinstance(v, ql.Calendar):
         return v
+
+    # String input
     if isinstance(v, str):
-        ctor = _CALENDAR_CTORS.get(v)
-        if not ctor:
-            raise ValueError(f"Unsupported calendar '{v}'")
-        return ctor()
+        name = v
+        # First try class name
+        try:
+            return _calendar_from_class_and_market(name, None)
+        except Exception:
+            # Then try display name
+            return _calendar_from_display_name(name)
+
+    # Dict input
     if isinstance(v, dict):
-        name = v.get("name", "TARGET")
-        ctor = _CALENDAR_CTORS.get(name)
-        if not ctor:
-            raise ValueError(f"Unsupported calendar '{name}'")
+        name = v.get("name")
+        if not name:
+            raise ValueError("Calendar dict must contain 'name'.")
         market = v.get("market", None)
-        if market is None:
-            return ctor()
-        # e.g., ql.UnitedStates(ql.UnitedStates.Market(market))
-        enum_cls = getattr(ql, name)
-        return ctor(enum_cls.Market(int(market)))
+
+        # Prefer class name path; if that fails, treat 'name' as display name.
+        try:
+            return _calendar_from_class_and_market(name, market)
+        except Exception:
+            return _calendar_from_display_name(name)
+
     raise TypeError(f"Cannot decode calendar from {type(v).__name__}")
 
 # ----------------------------- Business Day Convention helpers --------------
@@ -390,7 +508,16 @@ def ibor_from_json(v: Union[None, str, Dict[str, Any], ql.IborIndex]) -> Optiona
 
     raise TypeError(f"Cannot decode IborIndex from {type(v).__name__}")
 
-
+def _fix_schedule_calendar_from_top_level(data: dict) -> dict:
+    try:
+        sched = data.get("schedule")
+        top_cal = data.get("calendar")
+        if isinstance(sched, dict) and isinstance(sched.get("calendar"), dict):
+            if sched["calendar"].get("name") == "Calendar" and isinstance(top_cal, dict) and top_cal.get("name"):
+                sched["calendar"] = {"name": top_cal["name"]}
+    except Exception:
+        pass
+    return data
 # ----------------------------- Generic mixin ---------------------------------
 
 class JSONMixin:
@@ -406,6 +533,7 @@ class JSONMixin:
 
     @classmethod
     def from_json_dict(cls, data: Dict[str, Any]):
+        data = _fix_schedule_calendar_from_top_level(data)
         return cls.model_validate(data)
 
     @classmethod

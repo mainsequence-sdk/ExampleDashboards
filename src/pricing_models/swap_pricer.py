@@ -99,7 +99,6 @@ def price_vanilla_swap_with_curve(
     float_leg_spread: float,
     ibor_index: ql.IborIndex,
     curve: ql.YieldTermStructureHandle,
-    past_fixing_rate: float | None = None,
 ) -> ql.VanillaSwap:
     # --- evaluation settings ---
     ql.Settings.instance().evaluationDate = calculation_date
@@ -171,56 +170,6 @@ def price_vanilla_swap_with_curve(
 
 
 
-def price_vanilla_swap(calculation_date: ql.Date, notional: float, start_date: ql.Date,
-                       maturity_date: ql.Date, fixed_rate: float, fixed_leg_tenor: ql.Period,
-                       fixed_leg_convention: object, fixed_leg_daycount: ql.DayCounter,
-                       float_leg_tenor: ql.Period, float_leg_spread: float,
-                       ibor_index: ql.IborIndex) -> ql.VanillaSwap:
-    """
-    Creates a vanilla interest rate swap instrument.
-    """
-    # 1. Add any necessary historical fixings before building the curve
-    add_historical_fixings(calculation_date, ibor_index)
-
-    # 2. Build the yield curve for discounting
-    discounting_curve = build_yield_curve(calculation_date)
-
-    # 3. Clone the Ibor index and link it to the newly built curve for forecasting.
-    pricing_ibor_index = ibor_index.clone(discounting_curve)
-
-    # 4. Define the payment schedules for both legs
-    calendar = pricing_ibor_index.fixingCalendar()
-
-    fixed_schedule = ql.Schedule(
-        start_date, maturity_date, fixed_leg_tenor, calendar,
-        fixed_leg_convention, fixed_leg_convention,
-        ql.DateGeneration.Forward, False
-    )
-
-    float_schedule = ql.Schedule(
-        start_date, maturity_date, float_leg_tenor, calendar,
-        pricing_ibor_index.businessDayConvention(), pricing_ibor_index.businessDayConvention(),
-        ql.DateGeneration.Forward, False
-    )
-
-    # 5. Create the swap instrument in QuantLib
-    swap = ql.VanillaSwap(
-        ql.VanillaSwap.Payer,  # We assume we are paying fixed, receiving float
-        notional,
-        fixed_schedule,
-        fixed_rate,
-        fixed_leg_daycount,
-        float_schedule,
-        pricing_ibor_index,
-        float_leg_spread,
-        pricing_ibor_index.dayCounter()
-    )
-
-    # 6. Create the pricing engine and attach it to the swap
-    engine = ql.DiscountingSwapEngine(discounting_curve)
-    swap.setPricingEngine(engine)
-
-    return swap
 
 
 def get_swap_cashflows(swap) -> Dict[str, List[Dict[str, Any]]]:

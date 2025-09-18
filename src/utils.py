@@ -1,5 +1,7 @@
 import datetime
 import QuantLib as ql
+import pytz
+
 
 def to_ql_date(dt: datetime.date) -> ql.Date:
     """
@@ -23,5 +25,5 @@ def to_py_date(qld: ql.Date) -> datetime.date:
     Returns:
         The corresponding datetime.date object.
     """
-    return datetime.date(qld.year(), qld.month(), qld.dayOfMonth())
+    return datetime.datetime(qld.year(), qld.month(), qld.dayOfMonth(),tzinfo=pytz.utc)
 

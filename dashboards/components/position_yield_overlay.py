@@ -12,26 +12,22 @@ def _maturity_in_years(val_date: dt.date, maturity_date: dt.date) -> float:
     return (maturity_date - val_date).days / 365.0
 
 
-def _compute_points(position,market_clean_prices, val_date: dt.date) -> List[Dict[str, Any]]:
+def _compute_points(position,calculation_date) -> List[Dict[str, Any]]:
     pts: List[Dict[str, Any]] = []
     for line in position.lines:
         ins = line.instrument
-        try:
-            clean_price = market_clean_prices[ins.content_hash()]
-            ytm = float(ins.get_yield(override_clean_price=clean_price))          # decimal, e.g. 0.078 -> 7.8%
-            x = _maturity_in_years(val_date, ins.maturity_date)
 
-            if ytm ==0.0:
-                continue
+        if line.extra_market_info is None:
+            continue
+        if "yield" not in line.extra_market_info:
+            continue
 
-        except Exception:
-            # Skip anything that can’t give a yield or maturity
-            continue
-        if x is None:
-            continue
+        x=(ins.maturity_date-calculation_date).days/365
+        ytm=line.extra_market_info["yield"]
+
         pts.append({
             "x": float(x),
-            "y": 100.0 * ytm,                     # plot in %
+            "y": ytm*100,                     # plot in %
             "label": str(ins.content_hash())[:3], # short label
         })
     # Sort by maturity for nicer hover/legend order
@@ -42,7 +38,6 @@ def _compute_points(position,market_clean_prices, val_date: dt.date) -> List[Dic
 def st_position_yield_overlay(
     *,
     position,
-market_clean_prices,
     val_date: dt.date,
     # kept in signature for compatibility; unused here
     ts_base=None,
@@ -62,9 +57,9 @@ market_clean_prices,
     st.subheader("Base curve + position yields (on demand)")
     c1, c2, _ = st.columns([1, 1, 6])
     with c1:
-        if st.button("Compute position yields", key=f"{key}_compute"):
+        if st.button("Overlay position yields", key=f"{key}_compute"):
             with st.spinner("Computing yields…"):
-                ss[f"{key}_points"] = _compute_points(position,market_clean_prices, val_date)
+                ss[f"{key}_points"] = _compute_points(position,calculation_date=val_date)
     with c2:
         if st.button("Clear points", key=f"{key}_clear"):
             ss.pop(f"{key}_points", None)

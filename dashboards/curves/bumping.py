@@ -8,8 +8,10 @@ import numpy as np
 import QuantLib as ql
 
 
-from src.pricing_models.indices import build_tiie_zero_curve_from_valmer
-
+from src.pricing_models.indices import build_zero_curve
+from src.utils import to_py_date
+from src.settings import TIIE_28_UID
+from src.instruments.position import Position,PositionLine
 
 KEYRATE_GRID_TIIE: Tuple[str, ...] = ("28D", "91D", "182D", "1Y", "2Y", "3Y", "5Y", "7Y", "10Y","20Y","30Y")
 
@@ -73,6 +75,7 @@ def _bump_zero_curve(base_ts: ql.YieldTermStructureHandle,
       - Uses the base term structure's day counter.
       - Reference date is pinned to base_ts.referenceDate() to avoid t=0 mismatches.
     """
+    import math
     spec = spec.normalized()
     par_spread = float(spec.parallel_bp) / 10_000.0
 
@@ -103,8 +106,17 @@ def _bump_zero_curve(base_ts: ql.YieldTermStructureHandle,
     for d in range(1, dense_short_years * 365 + 1):
         dates.append(cal.advance(calc_date, ql.Period(d, ql.Days)))
 
-    # Monthly grid thereafter
-    for m in range(dense_short_years * 12 + step_months, max_years * 12 + 1, step_months):
+    # Monthly grid thereafter — push horizon to at least the largest key‑rate tenor
+    def _tenor_to_years(s: str) -> float:
+        s = (s or "").strip().upper()
+        if s.endswith("Y"): return float(s[:-1])
+        if s.endswith("M"): return float(s[:-1]) / 12.0
+        if s.endswith("D"): return float(s[:-1]) / 365.0
+        return float(s)
+
+    grid_max = 0.0 if not spec.tiie_keyrate_grid else max(_tenor_to_years(t) for t in spec.tiie_keyrate_grid)
+    horizon_years = max(float(max_years), math.ceil(grid_max))  # e.g. ≥ 30y when grid has 30Y
+    for m in range(dense_short_years * 12 + step_months, int(horizon_years * 12) + 1, step_months):
         dates.append(cal.advance(calc_date, ql.Period(m, ql.Months)))
 
     # Optional: include any extra anchors (e.g., portfolio cash-flow dates or par-maturity endpoints)
@@ -120,20 +132,14 @@ def _bump_zero_curve(base_ts: ql.YieldTermStructureHandle,
     # Base discounts
     D0 = np.array([base_ts.discount(d) for d in dates], dtype=float)
 
-    # Piecewise-linear key-rate spread s_key(t) in decimals
-    def _tenor_to_years(s: str) -> float:
-        s = (s or "").strip().upper()
-        if s.endswith("Y"): return float(s[:-1])
-        if s.endswith("M"): return float(s[:-1]) / 12.0
-        if s.endswith("D"): return float(s[:-1]) / 365.0
-        return float(s)
-
-    xs = [0.0] + [_tenor_to_years(x) for x in spec.tiie_keyrate_grid] + [float(max_years)]
-    ys = [0.0] + [float(spec.keyrate_bp.get(x, 0.0)) / 10_000.0 for x in spec.tiie_keyrate_grid] + [0.0]
-    xs = np.array(xs, dtype=float)
-    ys = np.array(ys, dtype=float)
-
-    s_key = np.interp(t, xs, ys)
+    # Piecewise‑linear key‑rate spread s_key(t) in decimals — strictly increasing support,
+    # and 0bp outside the provided grid.
+    grid_pairs = sorted(((tenor, _tenor_to_years(tenor)) for tenor in (spec.tiie_keyrate_grid or ())),
+                        key=lambda p: p[1])
+    xs = np.array([0.0] + [yr for _, yr in grid_pairs], dtype=float)
+    ys = np.array([0.0] + [float(spec.keyrate_bp.get(tenor, 0.0)) / 10_000.0 for tenor, _ in grid_pairs],
+                  dtype=float)
+    s_key = np.interp(t, xs, ys, left=0.0, right=0.0)
     s_tot = s_key + par_spread
 
     # Apply spread in discount space. Ensure exact anchor at t=0.
@@ -187,7 +193,7 @@ def build_curves_for_ui(
     # ---- base curve (cache by date) ----
     base_ts = _BASE_TS_CACHE.get(dkey)
     if base_ts is None:
-        base_raw = build_tiie_zero_curve_from_valmer(calc_date)
+        base_raw = build_zero_curve(target_date=to_py_date(calc_date),index_identifier=TIIE_28_UID)
         base_ts = base_raw if isinstance(base_raw, ql.YieldTermStructureHandle) else ql.YieldTermStructureHandle(base_raw)
         base_ts.enableExtrapolation()
         _BASE_TS_CACHE[dkey] = base_ts
@@ -208,5 +214,17 @@ def build_curves_for_ui(
     nodes_base = _nodes_from_ts(base_ts, calc_date, tenors)
     nodes_bump = _nodes_from_ts(bumped_ts, calc_date, tenors)
 
-    return base_ts, bumped_ts, nodes_base, nodes_bump, "MXN-TIIE-28D"
+    return base_ts, bumped_ts, nodes_base, nodes_bump
 
+def get_bumped_position(position: Position, bump_curve):
+    bumped_lines = []
+
+    for position_line in position.lines:
+        base_instrument = position_line.instrument
+        bumped_instrument = base_instrument.copy()
+        bumped_instrument.reset_curve(bump_curve)
+        bumped_line = PositionLine(units=position_line.units,
+                                   instrument=bumped_instrument)
+        bumped_lines.append(bumped_line)
+    bumped_position = Position(lines=bumped_lines)
+    return bumped_position

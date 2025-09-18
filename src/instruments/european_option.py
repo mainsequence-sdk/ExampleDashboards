@@ -24,10 +24,7 @@ class EuropeanOption(InstrumentModel):
     option_type: Literal["call", "put"] = Field(
         ..., description="Option type: 'call' or 'put'."
     )
-    calculation_date: datetime.date = Field(
-        default_factory=datetime.date.today,
-        description="Valuation date used for pricing and Greeks."
-    )
+
 
     # Allow QuantLib types & keep runtime attrs out of the schema
     model_config = {"arbitrary_types_allowed": True}
@@ -38,7 +35,7 @@ class EuropeanOption(InstrumentModel):
 
     def _setup_pricing_components(self) -> None:
         # 1) market data
-        asset_range_map = {self.underlying: DateInfo(start_date=self.calculation_date)}
+        asset_range_map = {self.underlying: DateInfo(start_date=self.valuation_date)}
         md = data_interface.get_historical_data("equities_daily", asset_range_map)
         spot, vol, r, q = md["spot_price"], md["volatility"], md["risk_free_rate"], md["dividend_yield"]
 

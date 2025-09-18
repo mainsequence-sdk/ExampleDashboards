@@ -68,9 +68,9 @@ def instantiate_position(template: Position,
     new_lines = []
     for line in template.lines:
         inst = line.instrument.copy()
-        inst.valuation_date = valuation_date
+        inst.set_valuation_date( valuation_date)
         inst.reset_curve(curve)
-        new_lines.append(PositionLine(units=line.units, instrument=inst))
+        new_lines.append(PositionLine(units=line.units, instrument=inst,extra_market_info=line.extra_market_info))
     return Position(lines=new_lines)
 
 

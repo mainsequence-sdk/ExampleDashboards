@@ -15,7 +15,7 @@ from .vanilla_fx_option import VanillaFXOption
 from .knockout_fx_option import KnockOutFXOption
 from .fixed_rate_bond import FixedRateBond
 from .floating_rate_bond import FloatingRateBond
-from .interest_rate_swap import InterestRateSwap, TIIESwap
+from .interest_rate_swap import InterestRateSwap
 import pandas as pd
 import numpy as np
 
@@ -28,6 +28,7 @@ class PositionLine:
     """
     instrument: Instrument
     units: float = 1.0
+    extra_market_info:dict = None
 
     def unit_price(self) -> float:
         return float(self.instrument.price())
@@ -66,18 +67,18 @@ class Position(BaseModel):
             "FixedRateBond": FixedRateBond,
             "FloatingRateBond": FloatingRateBond,
             "InterestRateSwap": InterestRateSwap,
-            "TIIESwap": TIIESwap,
         })
         lines: List[PositionLine] = []
         for item in data.get("lines", []):
             t = item.get("instrument_type")
             payload = item.get("instrument", {})
             units = float(item.get("units", 1.0))
+            extra_market_info= item.get("extra_market_info")
             cls_ = reg.get(t)
             if cls_ is None or not hasattr(cls_, "from_json"):
                 raise ValueError(f"Unknown or non-JSONable instrument type: {t}")
-            inst = cls_.from_json(payload)  # <-- use JSONMixin.from_json (now accepts dict)
-            lines.append(PositionLine(instrument=inst, units=units))
+            inst = cls_.from_json(payload)
+            lines.append(PositionLine(instrument=inst, units=units,extra_market_info=extra_market_info))
         return cls(lines=lines)
 
         # ---------------- JSON ENCODING ----------------
@@ -135,6 +136,7 @@ class Position(BaseModel):
                 "instrument_type": type(inst).__name__,
                 "instrument": self._instrument_payload(inst),
                 "units": float(line.units),
+                "extra_market_info":line.extra_market_info
             })
         return {"lines": out_lines}
 

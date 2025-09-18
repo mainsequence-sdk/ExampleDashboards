@@ -7,8 +7,10 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import plotly.io as pio
 import QuantLib as ql
-from src.pricing_models.indices import make_tiie_28d_index
+from src.pricing_models.indices import get_index
 from src.pricing_models.swap_pricer import price_vanilla_swap_with_curve
+from src.settings import TIIE_28_UID
+from src.utils import to_py_date
 
 # -------- Plot theme (consistent everywhere) --------
 
@@ -335,6 +337,7 @@ def _tiie_spot_from(calc_date: ql.Date, ibor: ql.IborIndex) -> ql.Date:
         fixing = cal.advance(fixing, 1, ql.Days)
     return ibor.valueDate(fixing)
 
+
 def _spot_from_index(calc_date: ql.Date, index: ql.IborIndex) -> ql.Date:
     cal = index.fixingCalendar()
     fixing = cal.adjust(calc_date, ql.Following)
@@ -342,62 +345,52 @@ def _spot_from_index(calc_date: ql.Date, index: ql.IborIndex) -> ql.Date:
         fixing = cal.advance(fixing, 1, ql.Days)
     return index.valueDate(fixing)
 
+
 def _par_yield_curve(ts: ql.YieldTermStructureHandle,
-                     calc_date: ql.Date,
+
                      max_years: int = 12,
                      step_months: int = 3,
-                     index_hint: str = "USD-LIBOR-3M") -> tuple[np.ndarray, np.ndarray]:
-    cal = ql.TARGET()
-    dc = ql.Actual365Fixed()
-    # choose floating index for the synthetic par swap
-    hint = (index_hint or "").upper()
-    if "TIIE" in hint:
-        ibor = make_tiie_28d_index(ts)
-        float_step = ql.Period(28, ql.Days)
-        fixed_step = ql.Period(28, ql.Days)
-        fixed_dc = ql.Actual360()
-        fixed_cnv  = ql.ModifiedFollowing
-        spot = _tiie_spot_from(calc_date, ibor)
-    else:
-        ibor = ql.USDLibor(ql.Period("3M"), ts)
-        float_step = ql.Period("3M")
-        fixed_step = ql.Period("1Y")
-        fixed_dc = ql.Thirty360(ql.Thirty360.USA)
-        fixed_cnv = ql.Unadjusted
+                     ) -> tuple[np.ndarray, np.ndarray]:
 
-    # --- NEW: compute a VALID fixing date before asking for valueDate()
-    fix_cal = ibor.fixingCalendar()
-    fixing = fix_cal.adjust(calc_date, ql.Following)
-    while not ibor.isValidFixingDate(fixing):
-        fixing = fix_cal.advance(fixing, 1, ql.Days)
+    spot = ts.referenceDate()
+    curve_index = get_index(target_date=to_py_date(ts.referenceDate()),index_identifier=TIIE_28_UID)
+    cal = ts.calendar()
 
-    spot = _spot_from_index(calc_date, ibor)
+
+
+    #only for tiee now
+
+    float_step = ql.Period(28, ql.Days)
+    fixed_step = ql.Period(28, ql.Days)
+    fixed_dc = ql.Actual360()
+    fixed_cnv  = ql.ModifiedFollowing
+    dc=ql.Actual360()
+
 
 
     T, Y = [], []
     m = step_months
     while m <= max_years * 12:
-        end_from_today = cal.advance(calc_date, ql.Period(m, ql.Months))
-        T.append(dc.yearFraction(calc_date, end_from_today))
+        end_from_today = cal.advance(spot, ql.Period(m, ql.Months))
+        T.append(dc.yearFraction(spot, end_from_today))
 
-        end = (ibor.fixingCalendar().advance(spot, ql.Period(m, ql.Months))
-                if "TIIE" in hint else cal.advance(spot, ql.Period(m, ql.Months)))
+        end = curve_index.fixingCalendar().advance(spot, ql.Period(m, ql.Months))
 
         # **Use the same pricer and conventions as production code**
         swap = price_vanilla_swap_with_curve(
-                        calculation_date = calc_date,
-                    notional = 1.0,
-                    start_date = spot,
-                    maturity_date = end,
-                    fixed_rate = 0.0,  # we will read fairRate()
-                    fixed_leg_tenor = fixed_step,
-                    fixed_leg_convention = fixed_cnv,
-                    fixed_leg_daycount = fixed_dc,
-                    float_leg_tenor = float_step,
-                    float_leg_spread = 0.0,
-                    ibor_index = ibor,
-                    curve = ts,
-                )
+            calculation_date=spot,
+            notional=1.0,
+            start_date=spot,
+            maturity_date=end,
+            fixed_rate=0.0,  # we will read fairRate()
+            fixed_leg_tenor=fixed_step,
+            fixed_leg_convention=fixed_cnv,
+            fixed_leg_daycount=fixed_dc,
+            float_leg_tenor=float_step,
+            float_leg_spread=0.0,
+            ibor_index=curve_index,
+            curve=ts,
+        )
         Y.append(swap.fairRate())
 
         m += step_months
@@ -413,29 +406,31 @@ def plot_par_yield_curve(base_ts: ql.YieldTermStructureHandle,
                          bump_tenors: dict[str, float] | None = None,
                          max_years: int = 12,
                          step_months: int = 3,
-                         index_hint: str = "USD-LIBOR-3M"
+
                          ) -> go.Figure:
-    T0, Y0 = _par_yield_curve(base_ts, calc_date, max_years, step_months, index_hint=index_hint)
-    T1, Y1 = _par_yield_curve(bumped_ts, calc_date, max_years, step_months, index_hint=index_hint)
+    T0, Y0 = _par_yield_curve(base_ts, max_years, step_months, )
+    T1, Y1 = _par_yield_curve(bumped_ts, max_years, step_months, )
 
     # Node markers
 
 
-    if "TIIE" in (index_hint or "").upper():
-        xb, yb, lb_b = _par_nodes_tiie(base_ts, calc_date, base_nodes)
-        xB, yB, lb_B = _par_nodes_tiie(bumped_ts, calc_date, bumped_nodes)
-    else:
-        xb, yb, lb_b = _nodes_to_points(base_nodes, calc_date)
-        xB, yB, lb_B = _nodes_to_points(bumped_nodes, calc_date)
+    xb, yb, lb_b = _par_nodes_tiie(base_ts, base_nodes)
+    xB, yB, lb_B = _par_nodes_tiie(bumped_ts, bumped_nodes)
+
     # Node markers: for TIIE show **par** nodes (same pricer as the line). For others keep zero nodes.
 
     fig = go.Figure()
 
     # Lines
-    fig.add_scatter(x=T0, y=Y0 * 100, mode="lines", name="Base par yield",
-                    line=dict(color="#5DADE2", width=2))
-    fig.add_scatter(x=T1, y=Y1 * 100, mode="lines", name="Bumped par yield",
-                    line=dict(color="#F5B041", width=2))
+    fig.add_scatter(
+        x=T0, y=Y0 * 100, mode="lines", name="Base par yield",
+                    line=dict(color="#5DADE2", width=2), legendgroup="curve"
+    )
+    fig.add_scatter(
+        x=T1, y=Y1 * 100, mode="lines", name="Bumped par yield",
+                    line=dict(color="#AF7AC5", width=2, dash="dash"),  # purple & dashed
+        opacity=0.8, legendgroup="curve"
+    )
 
     # Node markers (base = squares, bumped = diamonds)
     fig.add_scatter(
@@ -474,11 +469,12 @@ def plot_par_yield_curve(base_ts: ql.YieldTermStructureHandle,
 
 
 def _par_nodes_tiie(ts: ql.YieldTermStructureHandle,
-                    calc_date: ql.Date,
+
                     nodes: list[dict]) -> tuple[np.ndarray, np.ndarray, list[str]]:
-    ibor = make_tiie_28d_index(ts)
+    spot = ts.referenceDate()
+    ibor = get_index(target_date=to_py_date(spot),index_identifier=TIIE_28_UID)
     calx = ibor.fixingCalendar()
-    spot = _tiie_spot_from(calc_date, ibor)
+
 
     xs, ys, labels = [], [], []
     for n in nodes:
@@ -487,10 +483,10 @@ def _par_nodes_tiie(ts: ql.YieldTermStructureHandle,
             continue
         per = ql.Period(tstr)
         # x‑axis point (display years; Actual365 is fine for the axis)
-        x = ql.Actual365Fixed().yearFraction(calc_date, calx.advance(calc_date, per))
+        x = ql.Actual365Fixed().yearFraction(spot, calx.advance(spot, per))
         # par rate using the same src pricer
         swap = price_vanilla_swap_with_curve(
-            calculation_date=calc_date,
+            calculation_date=spot,
             notional=1.0,
             start_date=spot,
             maturity_date=calx.advance(spot, per),

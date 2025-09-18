@@ -27,10 +27,7 @@ class VanillaFXOption(InstrumentModel):
     notional: float = Field(
         ..., description="Notional amount in foreign currency units."
     )
-    calculation_date: datetime.date = Field(
-        default_factory=datetime.date.today,
-        description="Valuation date used for pricing and Greeks."
-    )
+
 
     # Allow QuantLib types & keep runtime attrs out of the schema
     model_config = {"arbitrary_types_allowed": True}

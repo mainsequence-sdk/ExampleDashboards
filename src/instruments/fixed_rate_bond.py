@@ -6,85 +6,36 @@ from pydantic import BaseModel, Field, PrivateAttr
 
 from src.pricing_models.bond_pricer import create_fixed_rate_bond
 from src.utils import to_ql_date,to_py_date
-from .json_codec import (
-    JSONMixin,
-    period_to_json, period_from_json,
-    daycount_to_json, daycount_from_json,
-    calendar_to_json, calendar_from_json,
-)
+
 from pydantic import BaseModel, Field, PrivateAttr, field_serializer, field_validator
 from .base_instrument import InstrumentModel
+
+
+from .ql_fields import (
+    QuantLibPeriod as QPeriod,
+    QuantLibDayCounter as QDayCounter,
+    QuantLibCalendar as QCalendar,
+    QuantLibBDC as QBDC,
+)
+
+
 class FixedRateBond(InstrumentModel):
     """Plain-vanilla fixed-rate bond."""
 
-    face_value: float = Field(
-        ..., description="Face (par) amount of the bond (currency units)."
-    )
-    coupon_rate: float = Field(
-        ..., description="Annual coupon rate as a decimal (e.g., 0.045 for 4.5%)."
-    )
-    issue_date: datetime.date = Field(
-        ..., description="Bond issue date (schedule start)."
-    )
-    maturity_date: datetime.date = Field(
-        ..., description="Bond redemption date (schedule end)."
-    )
-    coupon_frequency: ql.Period = Field(
-        ..., description="Coupon interval, e.g., ql.Period('6M') for semiannual."
-    )
-    day_count: ql.DayCounter = Field(
-        ..., description="Day-count basis, e.g., ql.Thirty360(ql.Thirty360.USA)."
-    )
-
-    calendar: ql.Calendar = Field(
-        default_factory=ql.TARGET,
-        description="Holiday calendar used for the schedule."
-    )
-    business_day_convention: int = Field(
-        default=ql.Following,
-        description="Date roll convention (QuantLib enum int)."
-    )
-    settlement_days: int = Field(
-        default=2,
-        description="Settlement lag in business days."
-    )
-    valuation_date: datetime.date = Field(
-        default_factory=datetime.date.today,
-        description="Valuation date (QuantLib evaluation date)."
-    )
+    face_value: float = Field(...)
+    coupon_rate: float = Field(...)
+    issue_date: datetime.date = Field(...)
+    maturity_date: datetime.date = Field(...)
+    coupon_frequency: QPeriod = Field(...)
+    day_count: QDayCounter = Field(...)
+    calendar: QCalendar = Field(default_factory=ql.TARGET)
+    business_day_convention: QBDC = Field(default=ql.Following)
+    settlement_days: int = Field(default=2)
 
     model_config = {"arbitrary_types_allowed": True}
 
     _bond: Optional[ql.FixedRateBond] = PrivateAttr(default=None)
 
-    # ---------- JSON field serializers ----------
-    @field_serializer("coupon_frequency", when_used="json")
-    def _ser_coupon_frequency(self, v: ql.Period) -> str:
-        return period_to_json(v)
-
-    @field_serializer("day_count", when_used="json")
-    def _ser_day_count(self, v: ql.DayCounter) -> str:
-        return daycount_to_json(v)
-
-    @field_serializer("calendar", when_used="json")
-    def _ser_calendar(self, v: ql.Calendar) -> Dict[str, Any]:
-        return calendar_to_json(v)
-
-    # ---------- JSON field validators (decode) ----------
-    @field_validator("coupon_frequency", mode="before")
-    @classmethod
-    def _val_coupon_frequency(cls, v):
-        return period_from_json(v)
-
-    @field_validator("day_count", mode="before")
-    @classmethod
-    def _val_day_count(cls, v):
-        return daycount_from_json(v)
-
-    @field_validator("calendar", mode="before")
-    @classmethod
-    def _val_calendar(cls, v):
-        return calendar_from_json(v)
 
     def _setup_pricer(self) -> None:
         if self._bond is None:
