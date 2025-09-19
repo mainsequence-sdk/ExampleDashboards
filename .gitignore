@@ -4,3 +4,4 @@
 /.streamlit/
 dashboards/position.json
 dashboards/df_out.csv
+*position.json
