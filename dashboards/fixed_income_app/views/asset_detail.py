@@ -2,7 +2,39 @@
 from __future__ import annotations
 import streamlit as st
 from mainsequence.dashboards.streamlit.core.registry import register_page
+import mainsequence.client as msc
 from dashboards.fixed_income_app.context import AppContext
+import json
+
+
+@st.cache_data(show_spinner=False)
+def _fetch_mainsequence_asset(asset_id: int):
+    """Fetch a MainSequence Asset by id and return a plain dict (Pydantic v1/v2 compatible)."""
+    if msc is None:
+        raise ImportError("mainsequence.client is not installed/available")
+    asset = msc.Asset.get(id=int(asset_id))
+
+    return asset.model_dump()
+
+def _instrument_json(inst) -> dict:
+    """Best‑effort to get a full JSON configuration of the instrument."""
+    # Prefer the instrument's own serializer if present.
+    for attr in ("to_json_dict", "to_json"):
+        fn = getattr(inst, attr, None)
+        if callable(fn):
+            try:
+                data = fn()
+                # Some implementations may return a nested object; ensure dict
+                if isinstance(data, dict):
+                    return data
+            except Exception:
+                pass
+    # Fallback: shallow introspection
+    try:
+        return json.loads(json.dumps(inst, default=lambda o: getattr(o, "__dict__", str(o))))
+    except Exception:
+        # Last resort: show a minimal snapshot
+        return {"instrument_type": getattr(inst, "instrument_type", type(inst).__name__)}
 
 @register_page("asset_detail", "Asset Detail", visible=False, has_sidebar=False)
 def render(ctx: AppContext):
@@ -49,7 +81,17 @@ def render(ctx: AppContext):
 
     # --- Header / metrics ---
     st.subheader("Asset Detail")
-    st.caption(f"ID: `{asset_id}`")
+    # IDs: instrument hash + optional MainSequence Asset ID
+    instrument_hash = str(line.instrument.content_hash())
+    # Try attribute first; if missing, try to pull from instrument JSON
+    ms_asset_id = getattr(line.instrument, "main_sequence_asset_id", None)
+    inst_json_full = _instrument_json(line.instrument)
+    if ms_asset_id is None:
+        ms_asset_id = inst_json_full.get("main_sequence_asset_id", None)
+
+    st.caption(f"Instrument hash: `{instrument_hash}`")
+    if ms_asset_id is not None:
+        st.caption(f"MainSequence asset id: **{ms_asset_id}**")
 
     def _fmt_ccy(x: float) -> str:
         import math
@@ -61,15 +103,26 @@ def render(ctx: AppContext):
     c3.metric("NPV (bumped)", _fmt_ccy(bumped_pv))
 
     st.divider()
-    st.write("**Instrument summary**")
-    st.json({
-        "instrument_type": getattr(line.instrument, "instrument_type", type(line.instrument).__name__),
-        "issue_date": getattr(line.instrument, "issue_date", None),
-        "maturity_date": getattr(line.instrument, "maturity_date", None),
-        "coupon_frequency": getattr(line.instrument, "coupon_frequency", None),
-        "spread": getattr(line.instrument, "spread", None),
-        "face_value": getattr(line.instrument, "face_value", None),
-    })
+    col_left, col_right = st.columns(2)
+
+    # Left column: full instrument JSON configuration
+    with col_left:
+        st.write("**Instrument configuration (full JSON)**")
+        st.json(inst_json_full)
+
+    # Right column: MainSequence Asset JSON (if available)
+    with col_right:
+        st.write("**MainSequence Asset (API)**")
+        if ms_asset_id is None:
+            st.info("Instrument has no `main_sequence_asset_id`.")
+        else:
+            try:
+                asset_dict = _fetch_mainsequence_asset(int(ms_asset_id))
+                st.json(asset_dict)
+            except Exception as e:
+                st.info(f"Could not fetch MainSequence Asset id={ms_asset_id}: {e}")
+
+
 
     # --- Cashflows: use get_cashflows_df() exactly as requested ---
     st.divider()

@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 import streamlit as st
+import os
 
 # Ensure repo root is importable
 ROOT = Path(__file__).resolve().parent
@@ -25,6 +26,9 @@ def _render_header(ctx: AppContext) -> None:
 # --- Session seeding (domain defaults) ---------------------------------------
 def _init_session(ss) -> None:
     default_cfg = str((ROOT.parent / "position.json").resolve())
+
+    if os.path.isfile(default_cfg) ==False:
+        default_cfg = str((ROOT.parent.parent / "data/dump_position_example.json").resolve())
     ss.setdefault("cfg_path", default_cfg)
 
 # Register all views in this package (side effects of @register_page)

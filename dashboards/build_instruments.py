@@ -10,12 +10,13 @@ import re
 from tqdm import tqdm
 from contextlib import contextmanager
 
-from src.instruments import PositionLine, Position
-from src.pricing_models.indices import build_zero_curve
-from src.instruments.floating_rate_bond import FloatingRateBond
-from src.settings import (TIIE_28_UID,TIIE_91_UID,TIIE_182_UID,TIIE_OVERNIGHT_UID,CETE_28_UID,
+from mainsequence.instruments.instruments import PositionLine, Position
+from mainsequence.instruments.pricing_models.indices import build_zero_curve
+from mainsequence.instruments.instruments.floating_rate_bond import FloatingRateBond
+from mainsequence.instruments.settings import (TIIE_28_UID,TIIE_91_UID,TIIE_182_UID,TIIE_OVERNIGHT_UID,CETE_28_UID,
 CETE_182_UID
                           )
+import mainsequence.client as msc
 import pytz
 import json
 from pathlib import Path
@@ -298,41 +299,6 @@ def compute_sheet_schedule_force_match(
 
 
 
-# =============================================================================
-# Probe bond (for diagnostics) + coupon counting
-# =============================================================================
-def _build_probe_bond(
-    schedule: ql.Schedule,
-    *,
-    eval_date: dt.date,
-    day_count: ql.DayCounter = ql.Actual360(),
-    calendar: ql.Calendar = ql.Mexico(),
-    bdc: int = ql.Following,
-    settlement_days: int = 1,
-    issue_date: Optional[dt.date] = None
-) -> ql.Bond:
-    """
-    Build a trivial floater on a flat curve solely to introspect cashflows.
-    Works for any schedule (if <=1 date, coupons=0).
-    """
-    ql.Settings.instance().evaluationDate = qld(eval_date)
-    flat = ql.FlatForward(qld(eval_date), 0.10, day_count)  # OK: (Date, Rate, DayCounter)
-    h = ql.YieldTermStructureHandle(flat)
-
-    # Prefer your actual index factory if available
-    try:
-        idx = make_tiie_index(h)
-    except Exception:
-        idx = ql.USDLibor(ql.Period("1M"), h)
-
-    fixing_days = int(idx.fixingDays())
-    probe = ql.FloatingRateBond(
-        settlement_days, 100.0, schedule, idx, day_count, bdc, fixing_days,
-        [1.0], [0.0], [], [], False, 100.0,
-        qld(issue_date) if issue_date else ql.Date(1, 1, 1901)
-    )
-    probe.setPricingEngine(ql.DiscountingBondEngine(h))
-    return probe
 
 def _count_future_coupons(b: ql.Bond, ref_py: dt.date, include_ref: bool) -> int:
     n = 0
@@ -554,6 +520,7 @@ def assert_schedule_matches_sheet_debug(
 # =============================================================================
 # Coupon counters for built instruments
 # =============================================================================
+
 def count_future_coupons(
     b: ql.Bond,
     *,
@@ -642,6 +609,7 @@ def build_qll_floater_from_row(
         schedule=explicit_schedule,        # <— IMPORTANT
     )
     frb.set_valuation_date( eval_date,)
+
     # --- assert/diagnose + (optionally) auto-fix the front boundary ---
     # try:
     #     frb._setup_pricer(with_yield=with_yield)
@@ -677,7 +645,6 @@ def build_qll_floater_from_row(
     #         valuation_date=eval_date,
     #         schedule=fixed_schedule,  # <— IMPORTANT
     #     )
-
     return BuiltBond(
         row_ix=int(row.name) if row.name is not None else -1,
         emisora=emisora,
@@ -813,8 +780,9 @@ def run_price_check(
         pass_price     = abs(price_diff_bp) <= price_tol_bp
         pass_cpn_count = (np.isnan(expected_count) or (future_cpn_count == expected_count))
 
+        instrument_hash= built.bond.content_hash()
         results.append({
-            "instrument_hash": built.bond.content_hash(),
+            "instrument_hash": instrument_hash,
 
             "FECHA": eval_date,
             "UID":f"{row['TIPO VALOR']}_{row['EMISORA']}_{row['SERIE']}",
@@ -839,7 +807,7 @@ def run_price_check(
             "DIAS TRANSC. CPN (model)": dias_transcurridos,
         })
 
-        instrument_map[built.bond.content_hash()] = {"instrument":built.bond,"extra_market_info":{"yield":row["TASA DE RENDIMIENTO"]/100}}
+        instrument_map[instrument_hash] = {"instrument":built.bond,"extra_market_info":{"yield":row["TASA DE RENDIMIENTO"]/100}}
 
     return pd.DataFrame(results), instrument_map
 
@@ -864,10 +832,19 @@ def build_position_from_sheet(
     df_out, instrument_map = run_price_check(all_floating)
     pd.set_option("display.float_format", lambda x: f"{x:,.6f}")
 
+    ms_assets_map=msc.Asset.filter(unique_identifier__in=df_out["UID"].to_list())
+    ms_assets_map={k.unique_identifier:k.id for k in ms_assets_map}
+
+    df_out["asset_id"]=df_out["UID"].map(ms_assets_map)
     # Pick best priced instruments
-    best = df_out.sort_values("price_diff_bp", ascending=True)
-    keep_ids = set(best["instrument_hash"].tolist())
-    position_instruments = {k: v for k, v in instrument_map.items() if k in keep_ids}
+    position_instruments={}
+    hash_to_id_map=df_out[["instrument_hash","asset_id"]].set_index("instrument_hash").dropna()["asset_id"].to_dict()
+    for k, v in instrument_map.items():
+
+        if k in hash_to_id_map.keys():
+            #add main sequence asset
+            v["instrument"].main_sequence_asset_id=int(hash_to_id_map[k])
+            position_instruments[k]=v
 
     # Units scaled by price from the model
     position_lines = [
@@ -882,10 +859,10 @@ def build_position_from_sheet(
     # ---- THIS LINE (existing): build JSON dict --------------------------------
     dump = position.to_json_dict()
 
-    # ---- NEW: write position.json immediately after 'dump = ...' --------------
+    # ---- : write position.json immediately after 'dump = ...' --------------
     # Choose a valuation date from the selected rows (fallback: today)
-    if not best.empty:
-        val_ts = pd.to_datetime(best["FECHA"].max())
+    if not df_out.empty:
+        val_ts = pd.to_datetime(df_out["FECHA"].max())
         if isinstance(val_ts, pd.Timestamp) and val_ts.tzinfo is not None:
             val_ts = val_ts.tz_convert(None)
         val_date = val_ts.date() if isinstance(val_ts, pd.Timestamp) else pd.to_datetime(val_ts).date()

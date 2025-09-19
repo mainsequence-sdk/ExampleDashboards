@@ -25,7 +25,7 @@ class AppContext:
     cfg: Dict[str, Any]
     val_date: dt.date
     ts_market: ql.YieldTermStructureHandle   # base curve (market)
-    position: Any                             # src.instruments.position.Position
+    position: Any                             # mainsequence.instruments.instruments.position.Position
 
 def build_context(config_path: str | Path) -> Tuple[AppContext, BumpSpec]:
     cfg = read_json(config_path)

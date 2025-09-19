@@ -6,12 +6,12 @@ from pathlib import Path
 import datetime as dt
 import streamlit as st
 
-from src.instruments.position import Position
+from mainsequence.instruments.instruments.position import Position
 # PositionLine import for safe instrument copying (repo layouts may differ)
 try:
-    from src.instruments import PositionLine
+    from mainsequence.instruments.instruments import PositionLine
 except Exception:
-    from src.instruments.position import PositionLine  # fallback
+    from mainsequence.instruments.instruments.position import PositionLine  # fallback
 
 
 # ---- utilities ----

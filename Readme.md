@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="images/logo.png" alt="QuantLibDev logo" width="160" />
+  <img src="logo.png" alt="QuantLibDev logo" width="160" />
 </p>
 
-# QuantLibDev — Pricing building blocks & examples (Python / QuantLib)
+# Main Sequence Instrument Pricer — Pricing building blocks & examples (Python / QuantLib)
 
 This repository contains a small but complete stack for derivatives and fixed‑income analytics in **Python** on top of **QuantLib**:
 
@@ -22,7 +22,7 @@ It is designed to be **extensible** (drop‑in new instruments/models) and **ins
 ```
 src/
 ├─ data_interface/
-│  └─ data_interface.py      # APIDataNode: mock quotes & fixings (equity, FX, swaps, TIIE zeros)
+│  └─ data_interface.py      # APIDataNode: mock quotes & fixings  or extract from main sequence platform(equity, FX, swaps, TIIE zeros)
 ├─ pricing_models/
 │  ├─ swap_pricer.py         # curve builders (USD IRS bootstrap, TIIE ZeroCurve), indices, helpers
 │  ├─ bond_pricer.py         # discount curve from bonds, fixed-rate bond construction & plotting

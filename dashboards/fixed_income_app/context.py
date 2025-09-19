@@ -12,7 +12,7 @@ import QuantLib as ql
 import pandas as pd
 
 from dashboards.curves.bumping import build_curves_for_ui as build_bumped_curves, BumpSpec
-from src.instruments.position import Position
+from mainsequence.instruments.instruments.position import Position
 from dashboards.components.position_loader import load_position_cached, instantiate_position
 
 # ---------- cacheable helpers ----------
@@ -101,6 +101,7 @@ def build_context(config_path: str | Path | None = None, *, mode: str = "full") 
     val_date = dt.date.fromisoformat(cfg["valuation"]["valuation_date"])
     currency_symbol = "MXN$"
 
+    ql.Settings.instance().evaluationDate = qld(val_date)
     # Final spec: session overrides file
     ss = st.session_state.get("curve_bump_spec")
     spec = BumpSpec(
@@ -118,12 +119,14 @@ def build_context(config_path: str | Path | None = None, *, mode: str = "full") 
     # Base position for whichever page needs it
     position = instantiate_position(template, curve=ts_base, valuation_date=val_date)
 
-    # Build bumped position only when a page needs the whole thing
+    # Build bumped position by re‑instantiating from the same template.
+    # This guarantees a fresh pricing engine + discount curve for every instrument.
+
     if mode == "full":
-        from dashboards.curves.bumping import get_bumped_position
-        bumped_position = get_bumped_position(position=position, bump_curve=ts_bump)
+        bumped_position = instantiate_position(template, curve=ts_bump, valuation_date=val_date)
     else:
-        bumped_position = position  # placeholder; asset_detail computes its own bumped value per-line
+        # asset_detail computes a per‑line bump locally; keep base position only
+        bumped_position = position
 
     default_days = int(cfg["valuation"].get("cashflow_cutoff_days", 365))
     carry_cutoff = val_date + dt.timedelta(days=default_days)

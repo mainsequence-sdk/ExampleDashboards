@@ -1,4 +1,4 @@
-# src/curves/bumping.py
+# dashboards/curves/bumping.py
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -8,10 +8,10 @@ import numpy as np
 import QuantLib as ql
 
 
-from src.pricing_models.indices import build_zero_curve
-from src.utils import to_py_date
-from src.settings import TIIE_28_UID
-from src.instruments.position import Position,PositionLine
+from mainsequence.instruments.pricing_models.indices import build_zero_curve
+from mainsequence.instruments.utils import to_py_date
+from mainsequence.instruments.settings import TIIE_28_UID
+from mainsequence.instruments.instruments.position import Position,PositionLine
 
 KEYRATE_GRID_TIIE: Tuple[str, ...] = ("28D", "91D", "182D", "1Y", "2Y", "3Y", "5Y", "7Y", "10Y","20Y","30Y")
 

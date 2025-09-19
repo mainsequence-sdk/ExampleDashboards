@@ -7,10 +7,10 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import plotly.io as pio
 import QuantLib as ql
-from src.pricing_models.indices import get_index
-from src.pricing_models.swap_pricer import price_vanilla_swap_with_curve
-from src.settings import TIIE_28_UID
-from src.utils import to_py_date
+from mainsequence.instruments.pricing_models.indices import get_index
+from mainsequence.instruments.pricing_models.swap_pricer import price_vanilla_swap_with_curve
+from mainsequence.instruments.settings import TIIE_28_UID
+from mainsequence.instruments.utils import to_py_date
 
 # -------- Plot theme (consistent everywhere) --------
 

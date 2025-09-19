@@ -7,6 +7,7 @@ from dashboards.components.curve_bump import curve_bump_controls
 from dashboards.curves.bumping import KEYRATE_GRID_TIIE
 from dashboards.components.position_yield_overlay import st_position_yield_overlay
 from dashboards.ux_utils import plot_par_yield_curve
+import os
 
 from pathlib import Path
 import pandas as pd
@@ -39,9 +40,10 @@ def render(ctx: AppContext):
 
         st.divider()
         st.markdown("### Build instruments from sheet")
+        default_path=os.environ.get("ANALYTIC_VECTOR_PATH")
         vendor_sheet = st.text_input(
-            "Vendor sheet path (.xls/.xlsx)",
-            value=st.session_state.get("vendor_sheet_path", "/home/jose/Downloads/VectorAnalitico24h_2025-08-27.xls"),
+            "Valmer Vector Analytico sheet path (.xls/.xlsx)",
+            value=st.session_state.get("vendor_sheet_path",default_path),
             help="Path to the Vector Analítico sheet or similar."
         )
 
@@ -55,7 +57,7 @@ def render(ctx: AppContext):
                     )
                 st.session_state["vendor_sheet_path"] = vendor_sheet
                 st.session_state["cfg_path"] = outp  # point app to the fresh file
-                st.success(f"✓ Rebuilt instruments and saved to:\n{outp}\n✓ Build state saved to:\n{dfp}")
+                st.success(f"✓ Rebuilt instruments and saved to:\n{outp}\n✓ Build state ")
                 st.rerun()
             except Exception as e:
                 st.error(f"Failed to rebuild instruments:\n{e}")

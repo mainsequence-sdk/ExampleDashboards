@@ -9,8 +9,8 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-from src.instruments.position import Position
-from src.instruments.position import Position,npv_table
+from mainsequence.instruments.instruments.position import Position
+from mainsequence.instruments.instruments.position import Position,npv_table
 
 
 
@@ -63,7 +63,7 @@ def build_position_npv_table(position: Position,
     base_npvs = position.npvs_by_id(apply_units=True)
     bump_npvs = bumped_position.npvs_by_id(apply_units=True) if bumped_position else None
     units = position.units_by_id()
-    raw = npv_table(base_npvs, bump_npvs, units, include_total=True)
+    raw = npv_table(base_npvs, bump_npvs, units, include_total=False)
 
     d = raw.copy()
     d["Instrument"] = d["instrument"].astype(str)
@@ -79,10 +79,7 @@ def build_position_npv_table(position: Position,
     if "Δ" in d.columns: cols.append("Δ")
 
     if add_details_link:
-        d["Details"] = np.where(
-            d["Instrument"].str.upper() == "TOTAL", "",
-            d["Instrument"].map(lambda x: f"/?asset_id={x}")  # <-- use asset_id param
-        )
+        d["Details"] = d["Instrument"].map(lambda x: f"/?asset_id={x}")
         cols.append("Details")
 
     return d[cols]

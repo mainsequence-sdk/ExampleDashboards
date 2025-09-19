@@ -36,9 +36,9 @@ import plotly.io as pio
 pio.templates.default = "plotly_dark"
 
 # Repo imports
-from src.data_interface import APIDataNode
-from src.utils import to_ql_date, to_py_date
-from src.pricing_models.swap_pricer import add_historical_fixings
+from mainsequence.instruments.data_interface import APIDataNode
+from mainsequence.instruments.utils import to_ql_date, to_py_date
+from mainsequence.instruments.pricing_models.swap_pricer import add_historical_fixings
 
 # -------------------- knobs --------------------
 VALUATION_DATE   = dt.date.today()

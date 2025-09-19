@@ -15,16 +15,16 @@ try:
 except Exception:
     pytest.skip("QuantLib not available; skipping instrument tests.", allow_module_level=True)
 
-from src.instruments.european_option import EuropeanOption
-from src.instruments.interest_rate_swap import InterestRateSwap
-from src.instruments.fixed_rate_bond import FixedRateBond
-from src.instruments.floating_rate_bond import FloatingRateBond
-from src.instruments.vanilla_fx_option import VanillaFXOption
-from src.instruments.knockout_fx_option import KnockOutFXOption
+from mainsequence.instruments.instruments.european_option import EuropeanOption
+from mainsequence.instruments.instruments.interest_rate_swap import InterestRateSwap
+from mainsequence.instruments.instruments.fixed_rate_bond import FixedRateBond
+from mainsequence.instruments.instruments.floating_rate_bond import FloatingRateBond
+from mainsequence.instruments.instruments.vanilla_fx_option import VanillaFXOption
+from mainsequence.instruments.instruments.knockout_fx_option import KnockOutFXOption
 
 
-from src.pricing_models.bond_pricer import plot_zero_coupon_curve
-from src.pricing_models.swap_pricer import plot_swap_zero_curve
+from mainsequence.instruments.pricing_models.bond_pricer import plot_zero_coupon_curve
+from mainsequence.instruments.pricing_models.swap_pricer import plot_swap_zero_curve
 
 def _is_finite_number(x) -> bool:
     try:
@@ -71,16 +71,16 @@ def test_tiie_swap():
     import datetime as dt
     import QuantLib as ql
 
-    from src.instruments.interest_rate_swap import InterestRateSwap
-    from src.pricing_models.swap_pricer import (
+    from mainsequence.instruments.instruments.interest_rate_swap import InterestRateSwap
+    from mainsequence.instruments.pricing_models.swap_pricer import (
         debug_tiie_trade,
 
     )
-    from src.pricing_models.indices import (
+    from mainsequence.instruments.pricing_models.indices import (
         get_index,build_zero_curve
     )
-    from src.settings import TIIE_28_UID
-    from src.utils import to_ql_date
+    from mainsequence.instruments.settings import TIIE_28_UID
+    from mainsequence.instruments.utils import to_ql_date
     import pytz
 
     # --- Build the original swap ---
@@ -233,8 +233,8 @@ def test_floating_rate_bond_direct():
 
     # Test TIIE-based floating rate bond with 0 spread
     # Use the same parameters as test_tiie_swap
-    from src.pricing_models.indices import build_tiie_zero_curve_from_valmer,make_tiie_28d_index
-    from src.utils import to_ql_date
+    from mainsequence.instruments.pricing_models.indices import build_tiie_zero_curve_from_valmer,make_tiie_28d_index
+    from mainsequence.instruments.utils import to_ql_date
 
     trade_date = dt.date(2025, 9, 6)  # Same as test_tiie_swap
     ql_trade_date = to_ql_date(trade_date)
@@ -254,7 +254,7 @@ def test_floating_rate_bond_direct():
 
     # Add historical fixings for the TIIE index to avoid missing fixing error
 
-    # from src.pricing_models.swap_pricer import add_historical_fixings
+    # from mainsequence.instruments.pricing_models.swap_pricer import add_historical_fixings
     # add_historical_fixings(ql_trade_date, tiie_index)
 
 
@@ -488,8 +488,8 @@ def test_knockout_fx_option():
 
 def test_position():
     import json
-    from src.instruments import Position
-    with open("/home/jose/code/MainSequenceClientSide/QuantLibDev/tests/position.json", "r") as fh:
+    from mainsequence.instruments.instruments import Position
+    with open("//tests/position.json", "r") as fh:
         positions=json.load(fh)
 
     position=Position.from_json_dict(positions)
