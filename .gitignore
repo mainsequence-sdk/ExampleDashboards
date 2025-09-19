@@ -3,3 +3,5 @@
 
 /.streamlit/
 *.position.json
+dashboards/position.json
+dashboards/df_out.csv
