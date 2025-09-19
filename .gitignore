@@ -2,3 +2,5 @@
 .env
 
 /.streamlit/
+dashboards/position.json
+dashboards/df_out.csv
