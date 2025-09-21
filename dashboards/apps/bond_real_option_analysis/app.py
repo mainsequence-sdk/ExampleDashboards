@@ -11,7 +11,9 @@ if str(ROOT.parent.parent) not in sys.path:
 
 from mainsequence.dashboards.streamlit.scaffold import AppConfig, run_app
 from mainsequence.dashboards.streamlit.core.registry import autodiscover
-from dashboards.bond_real_option_analysis.context import build_context, AppContext
+from dashboards.apps.bond_real_option_analysis.context import build_context, AppContext
+from dashboards.core.theme import register_theme
+register_theme()
 
 # One-page app
 def _route_selector(qp) -> str:

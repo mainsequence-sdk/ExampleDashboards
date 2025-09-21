@@ -12,7 +12,16 @@ if str(ROOT.parent.parent) not in sys.path:
 
 from mainsequence.dashboards.streamlit.scaffold import AppConfig, run_app
 from mainsequence.dashboards.streamlit.core.registry import autodiscover
-from dashboards.fixed_income_app.context import  AppContext,build_context
+from dashboards.apps.fixed_income_app.context import  AppContext,build_context
+from dashboards.components.engine_status import (
+    collect_engine_meta_from_ctx,
+    render_engine_status,
+)
+from dashboards.apps.fixed_income_app import extensions as fi_ext  # noqa: F401
+fi_ext.bootstrap()
+from dashboards.core.data_nodes import get_app_data_nodes
+from dashboards.core.theme import register_theme
+register_theme()
 
 # --- Route selection: asset detail only reachable via query param -------------
 def _route_selector(qp) -> str:
@@ -20,19 +29,28 @@ def _route_selector(qp) -> str:
 
 # --- Header renderer (domain-aware, uses ctx) --------------------------------
 def _render_header(ctx: AppContext) -> None:
-    st.title("Fixed Income Dashboard — Example")
+    st.title("Fixed Income Dashboard")
     st.caption(f"Valuation date: **{ctx.val_date.isoformat()}** — currency: **{ctx.currency_symbol.strip()}**")
+
+    deps = get_app_data_nodes()
+    render_engine_status(
+        collect_engine_meta_from_ctx(ctx),
+        app_sections={"Data nodes": deps.as_mapping()},
+        mode="sticky_bar",          # << clean sticky bar (not floating overlay)
+        title="Pricing engine",
+        open=False,
+    )
+
 
 # --- Session seeding (domain defaults) ---------------------------------------
 def _init_session(ss) -> None:
-    default_cfg = str((ROOT.parent / "position.json").resolve())
 
-    if os.path.isfile(default_cfg) ==False:
-        default_cfg = str((ROOT.parent.parent / "data/dump_position_example.json").resolve())
+
+    default_cfg = str((ROOT.parent.parent.parent / "data/dump_position_example.json").resolve())
     ss.setdefault("cfg_path", default_cfg)
 
 # Register all views in this package (side effects of @register_page)
-autodiscover("dashboards.fixed_income_app.views")
+autodiscover("dashboards.apps.fixed_income_app.views")
 
 # Build the app config and run (no logo/icon passed; scaffold supplies defaults)
 cfg = AppConfig(

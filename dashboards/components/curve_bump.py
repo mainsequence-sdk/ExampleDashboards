@@ -1,7 +1,7 @@
 # src/ui/components/curve_bump.py
 from __future__ import annotations
 
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import streamlit as st
 
@@ -61,3 +61,38 @@ def curve_bump_controls(*,
         par_bp = st.slider("Parallel bump (bp)", -300.0, 300.0, float(default_parallel_bp), 1.0, key=f"{key}_par")
 
     return BumpSpec(keyrate_bp=bump_map, parallel_bp=par_bp)
+
+def curve_bump_controls_ex(*,
+                           available_tenors: list[str],
+                           default_bumps: Optional[dict[str, float]] = None,
+                           default_parallel_bp: float = 0.0,
+                           header: str = "Curve bumps (bp)",
+                           container: Optional[st.delta_generator.DeltaGenerator] = None,
+                           key: str = "curve_bump") -> Tuple[BumpSpec, bool]:
+    """Drop-in variant that can render in any container and returns (spec, changed)."""
+    host = container or st.sidebar
+    with host:
+        st.markdown(f"### {header}")
+        default_bumps = default_bumps or {}
+        default_selection = list(default_bumps.keys()) or (["5Y"] if "5Y" in available_tenors else available_tenors[:1])
+        sel_tenors = st.multiselect("Tenors to bump", options=available_tenors,
+                                    default=default_selection, key=f"{key}_tenors")
+        bump_map = {}
+        for t in sel_tenors:
+            bump_map[t] = st.number_input(f"{t} bump (bp)", value=float(default_bumps.get(t, 0.0)),
+                                          step=5.0, format="%.1f", key=f"{key}_bump_{t}")
+        st.caption("Or paste 'tenor: bp' lines; these override sliders.")
+        manual_text = st.text_area("Manual bumps", value="", height=80,
+                                   placeholder="5Y: 100\n3Y: -10", key=f"{key}_manual")
+        for line in manual_text.splitlines():
+            if ":" in line:
+                t, v = line.split(":", 1)
+                try:
+                    bump_map[(t or "").strip().upper()] = float(v.strip())
+                except Exception:
+                    pass
+        par_bp = st.slider("Parallel bump (bp)", -300.0, 300.0, float(default_parallel_bp), 1.0, key=f"{key}_par")
+    spec = BumpSpec(keyrate_bp=bump_map, parallel_bp=par_bp)
+    changed = ({"keyrate_bp": default_bumps or {}, "parallel_bp": float(default_parallel_bp)}
+               != {"keyrate_bp": spec.keyrate_bp, "parallel_bp": float(spec.parallel_bp)})
+    return spec, changed

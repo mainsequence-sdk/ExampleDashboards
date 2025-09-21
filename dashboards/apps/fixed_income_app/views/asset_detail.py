@@ -3,7 +3,9 @@ from __future__ import annotations
 import streamlit as st
 from mainsequence.dashboards.streamlit.core.registry import register_page
 import mainsequence.client as msc
-from dashboards.fixed_income_app.context import AppContext
+from dashboards.apps.fixed_income_app.context import AppContext
+from dashboards.core.formatters import fmt_ccy
+
 import json
 
 
@@ -74,7 +76,12 @@ def render(ctx: AppContext):
     # Otherwise reprice this instrument against ctx.ts_bump locally (fast)
     if bumped_pv is None:
         inst_bumped = line.instrument.copy()
-        inst_bumped.reset_curve(ctx.ts_bump)
+        idx_name = getattr(line.instrument, "floating_rate_index_name", None)
+        bump_curve = (getattr(ctx, "bumped_curves", {}) or {}).get(idx_name, None)
+        if bump_curve is None:
+            # fallback to whatever curve the instrument already has
+            bump_curve = line.instrument.get_index_curve()
+        inst_bumped.reset_curve(bump_curve)
         bumped_pv = float(inst_bumped.price()) * units
 
     delta = bumped_pv - base_pv
@@ -93,14 +100,11 @@ def render(ctx: AppContext):
     if ms_asset_id is not None:
         st.caption(f"MainSequence asset id: **{ms_asset_id}**")
 
-    def _fmt_ccy(x: float) -> str:
-        import math
-        return "—" if x is None or not math.isfinite(float(x)) else f"{ctx.currency_symbol}{x:,.2f}"
 
     c1, c2, c3 = st.columns(3)
     c1.metric("Units", f"{units:,.2f}")
-    c2.metric("NPV (base)", _fmt_ccy(base_pv), delta=_fmt_ccy(delta))
-    c3.metric("NPV (bumped)", _fmt_ccy(bumped_pv))
+    c2.metric("NPV (base)", fmt_ccy(base_pv), delta=fmt_ccy(delta))
+    c3.metric("NPV (bumped)", fmt_ccy(bumped_pv))
 
     st.divider()
     col_left, col_right = st.columns(2)

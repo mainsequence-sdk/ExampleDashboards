@@ -8,11 +8,10 @@ from typing import Any, Dict, Tuple
 import streamlit as st
 import QuantLib as ql
 
+from dashboards.core.ql import qld
 from dashboards.components.position_loader import load_position_cached, instantiate_position
 from dashboards.curves.bumping import BumpSpec, build_curves_for_ui
-
-def qld(d: dt.date) -> ql.Date:
-    return ql.Date(d.day, d.month, d.year)
+from mainsequence.instruments.settings import TIIE_28_UID
 
 @st.cache_data(show_spinner=False)
 def read_json(path: str | Path) -> Dict[str, Any]:
@@ -31,13 +30,27 @@ def build_context(config_path: str | Path) -> Tuple[AppContext, BumpSpec]:
     cfg = read_json(config_path)
     val_date = dt.date.fromisoformat(cfg["valuation"]["valuation_date"])
 
-    # Build the *base* (market) curve using your existing facade with zero bumps
+    # Zero bumps (market curves)
     spec = BumpSpec(keyrate_bp={}, parallel_bp=0.0)
-    ts_base, _, _, _ = build_curves_for_ui(qld(val_date), spec)
 
-    # Load position template (cached on file content), then instantiate with base curve & date
+    # Load template and discover indices present
     _cfg_dict, template, _sig = load_position_cached(config_path)
-    position = instantiate_position(template, curve=ts_base, valuation_date=val_date)
+    present_indices = sorted({
+        getattr(ln.instrument, "floating_rate_index_name", None)
+        for ln in template.lines
+        if getattr(ln.instrument, "floating_rate_index_name", None) is not None
+    }) or [TIIE_28_UID]
 
-    ctx = AppContext(cfg=cfg, val_date=val_date, ts_market=ts_base, position=position)
-    return ctx, spec
+    # Build a base curve for every index we need
+    curve_map: dict[str, ql.YieldTermStructureHandle] = {}
+    for idx in present_indices:
+        ts_base, _, _, _ = build_curves_for_ui(qld(val_date), spec, index_identifier=idx)
+        curve_map[idx] = ts_base
+
+    # Instantiate the position with the index→curve map (new API)
+    position = instantiate_position(template, index_curve_map=curve_map, valuation_date=val_date)
+
+    # Keep one handle for backward-compat (views should prefer the instrument's own curve)
+    ts_market = next(iter(curve_map.values()))
+
+    ctx = AppContext(cfg=cfg, val_date=val_date, ts_market=ts_market, position=position)

@@ -16,22 +16,16 @@ from typing import Callable, Dict, Tuple, List, Any
 
 import numpy as np
 import QuantLib as ql
+from dashboards.core.ql import as_handle, qld
 
 
-# -------------------------- helpers --------------------------
 
-def as_handle(ts) -> ql.YieldTermStructureHandle:
-    return ts if isinstance(ts, ql.YieldTermStructureHandle) else ql.YieldTermStructureHandle(ts)
 
 def discount(ts_or_handle, d_or_t):
     return ts_or_handle.discount(d_or_t) if isinstance(ts_or_handle, ql.YieldTermStructureHandle) \
            else ts_or_handle.discount(d_or_t)
 
-def qld(d) -> ql.Date:
-    # Accept datetime.date or ql.Date
-    if isinstance(d, ql.Date):
-        return d
-    return ql.Date(d.day, d.month, d.year)
+
 
 def _inst_forward_at_date(ts_or_handle, date: ql.Date, dc: ql.DayCounter, h_days: int = 1) -> float:
     """Approx f(0,t) using two nearby Dates to avoid daycount mismatches."""

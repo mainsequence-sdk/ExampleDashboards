@@ -1,7 +1,5 @@
 # dashboards/bond_real_option_analysis/views/run_analysis.py
 from __future__ import annotations
-import math
-from typing import Tuple
 
 import streamlit as st
 import numpy as np
@@ -9,14 +7,14 @@ import pandas as pd
 import QuantLib as ql
 from mainsequence.dashboards.streamlit.core.registry import register_page
 
-from dashboards.bond_real_option_analysis.context import AppContext
-from dashboards.bond_real_option_analysis.engine import (
+from dashboards.apps.bond_real_option_analysis.context import AppContext
+from dashboards.apps.bond_real_option_analysis.engine import (
     LSMSettings, lsm_optimal_stopping, eval_sell_invest_to_horizon
 )
+from dashboards.core.formatters import fmt_ccy
+import dataclasses
 
-# ---- tiny helpers ----
-def _fmt_ccy(x: float, symbol: str = "MXN$") -> str:
-    return "—" if x is None or not math.isfinite(float(x)) else f"{symbol}{x:,.2f}"
+
 
 def _make_parallel_spread_curve(base: ql.YieldTermStructureHandle, spread_bp: float) -> ql.YieldTermStructureHandle:
     if abs(spread_bp) < 1e-12:
@@ -112,15 +110,15 @@ def render(ctx: AppContext):
         c1, c2 = st.columns(2)
         with c1:
             st.markdown("**Frictionless** (market = FTP = invest, no costs)")
-            st.metric("LSM value @ t=0", _fmt_ccy(res_A.lsm_value),
-                      delta=_fmt_ccy(res_A.lsm_value - res_A.ql_npv))
-            st.caption(f"QL bond NPV (market curve): {_fmt_ccy(res_A.ql_npv)}")
+            st.metric("LSM value @ t=0", fmt_ccy(res_A.lsm_value),
+                      delta=fmt_ccy(res_A.lsm_value - res_A.ql_npv))
+            st.caption(f"QL bond NPV (market curve): {fmt_ccy(res_A.ql_npv)}")
 
         with c2:
             st.markdown("**ALM wedge** (market + FTP/invest spreads, frictions)")
-            st.metric("LSM value @ t=0 (ALM PV)", _fmt_ccy(res_B.lsm_value),
-                      delta=_fmt_ccy(res_B.lsm_value - res_A.lsm_value))
-            st.caption(f"Δ vs Frictionless: {_fmt_ccy(res_B.lsm_value - res_A.lsm_value,)}")
+            st.metric("LSM value @ t=0 (ALM PV)", fmt_ccy(res_B.lsm_value),
+                      delta=fmt_ccy(res_B.lsm_value - res_A.lsm_value))
+            st.caption(f"Δ vs Frictionless: {fmt_ccy(res_B.lsm_value - res_A.lsm_value,)}")
 
         st.divider()
         st.markdown("**Exercise diagnostics (ALM)**")

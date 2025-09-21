@@ -59,7 +59,7 @@ def load_position_cached(path: str | Path) -> tuple[dict, Position, str]:
 
 
 def instantiate_position(template: Position,
-                         curve,
+                         index_curve_map,
                          valuation_date: dt.date) -> Position:
     """
     Create a fresh Position instance from the cached template,
@@ -69,6 +69,7 @@ def instantiate_position(template: Position,
     for line in template.lines:
         inst = line.instrument.copy()
         inst.set_valuation_date( valuation_date)
+        curve=index_curve_map[inst.floating_rate_index_name]
         inst.reset_curve(curve)
         new_lines.append(PositionLine(units=line.units, instrument=inst,extra_market_info=line.extra_market_info))
     return Position(lines=new_lines)

@@ -5,6 +5,7 @@ import datetime as dt
 from typing import List, Dict, Any, Optional
 import streamlit as st
 import plotly.graph_objects as go
+from typing import Callable
 
 
 def _maturity_in_years(val_date: dt.date, maturity_date: dt.date) -> float:
@@ -39,14 +40,10 @@ def st_position_yield_overlay(
     *,
     position,
     val_date: dt.date,
-    # kept in signature for compatibility; unused here
-    ts_base=None,
-    ql_ref_date=None,
-    nodes_base=None,
-    index_hint=None,
-    max_years: int = 12,
-    step_months: int = 3,
+    ts_base=None, ql_ref_date=None, nodes_base=None, index_hint=None,
+    max_years: int = 12, step_months: int = 3,
     key: str = "pos_yield_overlay",
+    point_extractor: Optional[Callable[[Any, dt.date], List[Dict[str, Any]]]] = None,
 ) -> List[go.Scatter]:
     """
     UI that computes/clears position YTMs on demand and returns Plotly traces
@@ -59,7 +56,10 @@ def st_position_yield_overlay(
     with c1:
         if st.button("Overlay position yields", key=f"{key}_compute"):
             with st.spinner("Computing yields…"):
-                ss[f"{key}_points"] = _compute_points(position,calculation_date=val_date)
+                if point_extractor:
+                    ss[f"{key}_points"] = point_extractor(position, val_date)
+                else:
+                    ss[f"{key}_points"] = _compute_points(position, calculation_date=val_date)
     with c2:
         if st.button("Clear points", key=f"{key}_clear"):
             ss.pop(f"{key}_points", None)
