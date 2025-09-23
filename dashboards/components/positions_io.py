@@ -7,11 +7,7 @@ import datetime as dt
 import streamlit as st
 
 from mainsequence.instruments.instruments.position import Position
-# PositionLine import for safe instrument copying (repo layouts may differ)
-try:
-    from mainsequence.instruments.instruments import PositionLine
-except Exception:
-    from mainsequence.instruments.instruments.position import PositionLine  # fallback
+from mainsequence.instruments.instruments import PositionLine
 
 
 # ---- utilities ----
@@ -58,21 +54,6 @@ def load_position_cached(path: str | Path) -> tuple[dict, Position, str]:
     return cfg, template, sig
 
 
-def instantiate_position(template: Position,
-                         index_curve_map,
-                         valuation_date: dt.date) -> Position:
-    """
-    Create a fresh Position instance from the cached template,
-    applying valuation_date and curve to each instrument without mutating the template.
-    """
-    new_lines = []
-    for line in template.lines:
-        inst = line.instrument.copy()
-        inst.set_valuation_date( valuation_date)
-        curve=index_curve_map[inst.floating_rate_index_name]
-        inst.reset_curve(curve)
-        new_lines.append(PositionLine(units=line.units, instrument=inst,extra_market_info=line.extra_market_info))
-    return Position(lines=new_lines)
 
 
 # ---- optional: tiny sidebar convenience wrapper ----

@@ -6,60 +6,46 @@ from typing import List, Dict, Any, Optional
 import streamlit as st
 import plotly.graph_objects as go
 from typing import Callable
-
+from dashboards.services.positions import PositionOperations
 
 def _maturity_in_years(val_date: dt.date, maturity_date: dt.date) -> float:
     # Keep it simple & consistent with the curve x-axis (years)
     return (maturity_date - val_date).days / 365.0
 
 
-def _compute_points(position,calculation_date) -> List[Dict[str, Any]]:
-    pts: List[Dict[str, Any]] = []
-    for line in position.lines:
-        ins = line.instrument
 
-        if line.extra_market_info is None:
-            continue
-        if "yield" not in line.extra_market_info:
-            continue
-
-        x=(ins.maturity_date-calculation_date).days/365
-        ytm=line.extra_market_info["yield"]
-
-        pts.append({
-            "x": float(x),
-            "y": ytm*100,                     # plot in %
-            "label": str(ins.content_hash())[:3], # short label
-        })
-    # Sort by maturity for nicer hover/legend order
-    pts.sort(key=lambda p: p["x"])
-    return pts
 
 
 def st_position_yield_overlay(
     *,
     position,
-    val_date: dt.date,
-    ts_base=None, ql_ref_date=None, nodes_base=None, index_hint=None,
-    max_years: int = 12, step_months: int = 3,
-    key: str = "pos_yield_overlay",
+    valuation_date: dt.date,
+    key: str = "base_curve_position_overlay",
     point_extractor: Optional[Callable[[Any, dt.date], List[Dict[str, Any]]]] = None,
+    pos_ops: Optional[PositionOperations] = None,
 ) -> List[go.Scatter]:
     """
     UI that computes/clears position YTMs on demand and returns Plotly traces
     to overlay on an existing curve figure. It does NOT call st.plotly_chart.
+    - If `point_extractor` is provided, it is used (for compatibility).
+    - Otherwise, we call PositionOperations.yield_overlay_points(...).
     """
     ss = st.session_state
+    ops = pos_ops or PositionOperations()
 
     st.subheader("Base curve + position yields (on demand)")
     c1, c2, _ = st.columns([1, 1, 6])
+
     with c1:
         if st.button("Overlay position yields", key=f"{key}_compute"):
             with st.spinner("Computing yields…"):
-                if point_extractor:
-                    ss[f"{key}_points"] = point_extractor(position, val_date)
+                if callable(point_extractor):
+                    ss[f"{key}_points"] = point_extractor(position, valuation_date)
                 else:
-                    ss[f"{key}_points"] = _compute_points(position, calculation_date=val_date)
+                    ss[f"{key}_points"] = ops.yield_overlay_points(
+                        position=position, valuation_date=valuation_date
+                    )
+
     with c2:
         if st.button("Clear points", key=f"{key}_clear"):
             ss.pop(f"{key}_points", None)
@@ -70,7 +56,7 @@ def st_position_yield_overlay(
     if points:
         xs = [p["x"] for p in points]
         ys = [p["y"] for p in points]
-        texts = [p["label"] for p in points]
+        texts = [p.get("label", "") for p in points]
 
         traces.append(
             go.Scatter(

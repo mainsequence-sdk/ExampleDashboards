@@ -4,10 +4,10 @@ import plotly.graph_objects as go
 import QuantLib as ql
 
 from dashboards.core.tenor import tenor_to_years
-from dashboards.curves.rates import (
+from dashboards.services.curves import (
     ParRateCalculator, TIIE28ParCalculator, par_curve, par_nodes_from_tenors
 )
-from dashboards.curves.bumping import curve_family_key
+from dashboards.services.curves import curve_family_key,KEYRATE_GRID_BY_FAMILY
 
 # --- small helper for consistent x-axis years ---
 def _years_from_period(calc_date: ql.Date, per: ql.Period,
@@ -181,9 +181,7 @@ def plot_par_yield_curves_multi(
 def plot_par_yield_curves_by_family(
     base_curves: dict[str, ql.YieldTermStructureHandle],
     bumped_curves: dict[str, ql.YieldTermStructureHandle] | None,
-    calc_date: ql.Date,
     *,
-    keyrate_grid_by_index: dict[str, tuple[str, ...]] | None = None,
     max_years: int = 30,
     step_months: int = 3,
     par_calc: ParRateCalculator | None = None,
@@ -229,7 +227,7 @@ def plot_par_yield_curves_by_family(
             )
 
         # Show par nodes for the family (use rep index's grid if available)
-        tenors = tuple((keyrate_grid_by_index or {}).get(rep_idx, ()))
+        tenors =KEYRATE_GRID_BY_FAMILY[fam]
         if tenors:
             nodes_stub = [{"tenor": t} for t in tenors]
             xN, yN, _ = par_nodes_from_tenors(ts_base, nodes_stub, calc_local)

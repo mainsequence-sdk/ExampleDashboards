@@ -16,9 +16,14 @@ from typing import Callable, Dict, Tuple, List, Any
 
 import numpy as np
 import QuantLib as ql
-from dashboards.core.ql import as_handle, qld
+from dashboards.core.ql import  qld
 
 
+def as_handle(ts):
+    """YieldTermStructure | Handle -> Handle."""
+    if isinstance(ts, ql.YieldTermStructureHandle):
+        return ts
+    return ql.YieldTermStructureHandle(ts)
 
 
 def discount(ts_or_handle, d_or_t):
@@ -41,26 +46,26 @@ def _inst_forward_at_date(ts_or_handle, date: ql.Date, dc: ql.DayCounter, h_days
     h = t_p - t_m if t_p != t_m else 1e-8
     return -(np.log(Dp) - np.log(Dm)) / h
 
+# inside apps/bond_real_option_analysis/engine.py
+
 def _phi_grid_from_curve(ts_or_handle, a: float, sigma: float,
                          grid_dates: List[ql.Date],
                          grid_times: np.ndarray,
                          dc: ql.DayCounter) -> np.ndarray:
-    """phi(t) = f(0,t) + sigma^2/(2a^2) * (1 - e^{-a t})^2 on the provided grid."""
+    """phi(t) = f(0,t) + sigma^2/(2a^2) * (1 - e^{-a t})^2, with a->0 limit."""
     out = np.empty(len(grid_times))
+    small = abs(a) < 1e-8
     for i, (d, t) in enumerate(zip(grid_dates, grid_times)):
         f0t = _inst_forward_at_date(ts_or_handle, d, dc)
-        out[i] = f0t + (sigma**2) / (2.0 * a * a) * (1.0 - np.exp(-a * t))**2
+        if small:
+            adj = 0.5 * (sigma ** 2) * (t ** 2)
+        else:
+            adj = (sigma ** 2) / (2.0 * a * a) * (1.0 - np.exp(-a * t)) ** 2
+        out[i] = f0t + adj
     return out
 
-def _get_ql_bond(obj) -> ql.Bond:
-    """Extract underlying QuantLib bond from various wrappers."""
-    if isinstance(obj, ql.Bond):
-        return obj
-    if hasattr(obj, "_bond"):
-        return getattr(obj, "_bond")
-    if hasattr(obj, "bond"):
-        return getattr(obj, "bond")
-    raise TypeError("Cannot extract ql.Bond from instrument")
+
+
 
 def _cashflows_time_amount(bond: ql.Bond, eval_date: ql.Date, dc: ql.DayCounter) -> List[Tuple[float, float]]:
     """Future cashflows (>= eval_date), merged by time (in year fractions)."""
@@ -147,7 +152,8 @@ def lsm_optimal_stopping(
     eval_params = eval_params or {}
 
     # Core objects & grids
-    bond = _get_ql_bond(instrument)
+    instrument.price()
+    bond =instrument._bond
     eval_date = ql.Settings.instance().evaluationDate
     grid_dates, grid_times = _grid_from_bond(bond, eval_date, day_count, settings.mesh_months)
 
@@ -167,9 +173,14 @@ def lsm_optimal_stopping(
     a, sigma = settings.a, settings.sigma
     dc = day_count
 
-    # OU exact step params
-    decays = np.exp(-a * dt)
-    stds = sigma * np.sqrt((1.0 - np.exp(-2.0*a*dt)) / (2.0*a))
+    # OU exact step params (robust to small a)
+    # OU exact step params (robust to small a)
+    if abs(a) < 1e-8:
+        decays = np.ones_like(dt)
+        stds = sigma * np.sqrt(dt)
+    else:
+        decays = np.exp(-a * dt)
+        stds = sigma * np.sqrt((1.0 - np.exp(-2.0 * a * dt)) / (2.0 * a))
 
     phi_vals = _phi_grid_from_curve(market_curve, a, sigma, grid_dates, grid_times, dc)
     # r0 ~ f(0,0+)
@@ -247,8 +258,25 @@ def lsm_optimal_stopping(
     diag: Dict[str, Any] = {}
     if settings.record_diagnostics:
         times = grid_times.tolist()
+        diag["grid_times"] = times
         diag["exercise_rate_by_time"] = exercise_rate.tolist()
-        # Convert first-ex idx to times where set
+        # NEW:
+        diag["coupon_on_grid"] = coupon_on_grid.tolist()
+        diag["phi"] = phi_vals.tolist()  # φ(t)
+        diag["M"] = M.tolist()  # DF_FTP(t,H)/DF_INV(t,H)
+        diag["df_ftp"] = df_ftp.tolist()
+        diag["df_inv"] = df_inv.tolist()
+        diag["dt"] = dt.tolist()
+        diag["a"] = float(a);
+        diag["sigma"] = float(sigma)
+
+        # Expected ex‑coupon price path under HW1F at r = φ(t)
+        ex_expect = [0.0] * len(grid_times)
+        for i, t_i in enumerate(grid_times):
+            ex_expect[i] = float(ex_coupon_price_at(t_i, phi_vals[i]))
+        diag["ex_coupon_expected"] = ex_expect
+
+        # First exercise stats you already compute:
         first_ex_times = [times[j] for j in first_ex_idx if j >= 0]
         diag["first_exercise_times"] = first_ex_times
         diag["share_exercised_at_all"] = float(np.mean(first_ex_idx >= 0))
