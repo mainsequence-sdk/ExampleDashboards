@@ -21,6 +21,33 @@ from dashboards.components.date_selector import date_selector
 from dashboards.core.ql import qld
 import mainsequence.client as msc
 from dashboards.core.data_nodes import get_app_data_nodes
+from dashboards.helpers.mock import build_test_portfolio as _build_test_portfolio
+
+
+
+# --- Mock portfolio build: run ONLY on explicit click -----------------------
+def _request_mock_build() -> None:
+    """Set a flag; we will act on it later in this run."""
+    st.session_state["_req_build_mock_portfolio"] = True
+
+def _do_build_mock_if_requested() -> None:
+    """Execute the build only if explicitly requested via the flag."""
+    if not st.session_state.pop("_req_build_mock_portfolio", False):
+        return
+    try:
+        # Lazy import to avoid any import-time side effects.
+        from dashboards.helpers.mock import build_test_portfolio as _build_test_portfolio
+    except Exception:
+        st.error("`dashboards.helpers.mock.build_test_portfolio` is not available in this environment.")
+        return
+    try:
+        with st.spinner("Building mock portfolio 'mock_portfolio_floating_dashboard'…"):
+            _build_test_portfolio("mock_portfolio_floating_dashboard")
+        st.session_state["__just_built_mock_portfolio__"] = True
+        st.rerun()
+    except Exception as e:
+        st.exception(e)
+
 
 # --- Minimal data-nodes bootstrap (needed by portfolios.py) ------------------
 def _ensure_data_nodes() -> None:
@@ -32,7 +59,10 @@ def _ensure_data_nodes() -> None:
     try:
         deps.get("instrument_pricing_table_id")
     except KeyError:
-        deps.register(instrument_pricing_table_id="vector_de_precios_valmer")
+        # very important step so the prices cna be extracted from the right storage
+        from dashboards.apps.floating_portfolio_analysis.settings import PRICES_TABLE_NAME
+        deps.register(instrument_pricing_table_id=PRICES_TABLE_NAME)
+
     st.session_state["_deps_bootstrapped"] = True
 _ensure_data_nodes()
 # === Small helper context for this page (kept local for simplicity) ==========
@@ -70,6 +100,14 @@ def _build_curve_maps(valuation_date: dt.date,
 # ============================== PAGE =========================================
 st.title("Curve, Stats & Positions")
 
+# Surface a one-time success notice after mock build + rerun
+if st.session_state.pop("__just_built_mock_portfolio__", False):
+    st.success(
+        "Mock portfolio **'mock_portfolio_floating_dashboard'** was created. "
+        "Use the sidebar search to load it."
+    )
+
+
 # ---------- Sidebar ----------
 with st.sidebar:
     # Valuation date — persisted in session; never silently set to 'today'
@@ -91,6 +129,20 @@ with st.sidebar:
         help="Weights will be translated into integer holdings using this notional.",
         key="portfolio_notional",
     )
+
+    # Quick action: build a mock portfolio for demo/testing
+    st.divider()
+
+    st.button(
+        "Build mock portfolio",
+        key="btn_build_mock_portfolio",
+        use_container_width=True,
+        on_click=_request_mock_build,  # only sets a flag
+    )
+    # Perform the build strictly when requested by the button callback:
+    _do_build_mock_if_requested()
+
+
 
     # Portfolio picker (multi-select)
     selected_instances = sidebar_portfolio_multi_select(

@@ -84,10 +84,12 @@ def _make_weighted_lines(
     #get las tobservation workflow move to main node  This should match the curve date!!!
 
     last_observation=data_node.get_last_observation(asset_list=assets)
-
-    # observation_time=last_observation.index.get_level_values("max")
-    # publish_engine_meta("Pricing data", observation_time=getattr(asof, "date", lambda: asof)())
-    dirty_price_map=last_observation.reset_index("time_index")["close"].to_dict()
+    if last_observation.empty:
+        raise Exception("No price for portfolio assets")
+    else:
+        # observation_time=last_observation.index.get_level_values("max")
+        # publish_engine_meta("Pricing data", observation_time=getattr(asof, "date", lambda: asof)())
+        dirty_price_map=last_observation.reset_index("time_index")["close"].to_dict()
 
 
     lines: List[Dict[str, Any]] = []

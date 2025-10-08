@@ -9,22 +9,33 @@ import QuantLib as ql
 
 from mainsequence.instruments.pricing_models.indices import build_zero_curve
 from mainsequence.instruments.utils import to_py_date
-from mainsequence.instruments.settings import TIIE_28_UID,TIIE_182_UID
 from mainsequence.instruments.instruments.position import Position,PositionLine
 from dashboards.core.tenor import tenor_to_years
 import re
 
+from dataclasses import dataclass
+from typing import Protocol, Tuple, List,Optional, Union
+import numpy as np
+import QuantLib as ql
+import math
 
-from mainsequence.instruments.settings import (
-    TIIE_28_UID, TIIE_182_UID, TIIE_OVERNIGHT_UID,
-    CETE_28_UID, CETE_182_UID,TIIE_91_UID,
-)
+from mainsequence.instruments.pricing_models.indices import get_index
+from mainsequence.instruments.pricing_models.swap_pricer import price_vanilla_swap_with_curve
+from mainsequence.instruments.utils import to_py_date
+
+
+from mainsequence.client import Constant as _C
+
 _CURVE_FAMILY_OVERRIDES = {
-    TIIE_28_UID: "TIIE",
-    TIIE_182_UID: "TIIE",
-    TIIE_OVERNIGHT_UID: "TIIE",
-    CETE_28_UID: "CETE",
-    CETE_182_UID: "CETE",
+
+_C.get_value(name="REFERENCE_RATE__TIIE_28"):"TIIE",
+_C.get_value(name="REFERENCE_RATE__TIIE_182"):"TIIE",
+_C.get_value(name="REFERENCE_RATE__TIIE_OVERNIGHT"):"TIIE",
+_C.get_value(name="REFERENCE_RATE__CETE_28"):"CETE",
+_C.get_value(name="REFERENCE_RATE__CETE_91"):"CETE",
+_C.get_value(name="REFERENCE_RATE__CETE_182"):"CETE",
+_C.get_value(name="REFERENCE_RATE__UST"):"UST",
+
 }
 
 def curve_family_key(index_uid: str) -> str:
@@ -46,6 +57,7 @@ def curve_family_key(index_uid: str) -> str:
 KEYRATE_GRID_BY_FAMILY = {
     "TIIE": ("28D","91D","182D","1Y","2Y","3Y","5Y","7Y","10Y","20Y","30Y"),
     "CETE": ("28D","91D","182D","1Y","2Y","3Y","5Y","7Y","10Y","20Y","30Y"),
+    "UST": {"30D","90D","180D","1Y","2Y","3Y","5Y","7Y","10Y","20Y","30Y" }
 }
 
 
@@ -255,16 +267,7 @@ def get_bumped_position(position: Position, bump_curve):
     return bumped_position
 
 
-from dataclasses import dataclass
-from typing import Protocol, Tuple, List,Optional, Union
-import numpy as np
-import QuantLib as ql
-import math
 
-from mainsequence.instruments.pricing_models.indices import get_index
-from mainsequence.instruments.pricing_models.swap_pricer import price_vanilla_swap_with_curve
-from mainsequence.instruments.utils import to_py_date
-from mainsequence.instruments.settings import TIIE_28_UID
 
 @dataclass(frozen=True)
 class SwapConventions:

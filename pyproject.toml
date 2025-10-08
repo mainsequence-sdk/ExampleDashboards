@@ -1,0 +1,26 @@
+[build-system]
+requires = [
+  "setuptools>=61",
+  "wheel",
+  "tomli; python_version < '3.11'"
+]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mainsequence_example_dashboards"
+version = "1.0.0"
+authors = [{ name = "Main Sequence GmbH" }]
+requires-python = ">=3.10.0"
+
+# From Pipfile [packages]
+dependencies = [
+  "mainsequence",
+  "python-dotenv",
+  "xlrd",
+  "plotly",
+  "streamlit>=1.50.0",
+]
+
+# Explicitly exclude package finding, as this is an application, not a library
+[tool.setuptools.packages.find]
+exclude = ["*"]
