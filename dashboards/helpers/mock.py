@@ -25,13 +25,8 @@ def ensure_test_assets(unique_identifiers=None):
     Ensure the two test bonds exist and have instrument pricing details.
     Returns: List[msc.Asset]
     """
-    FLOATING_INDEX_NAME = "UST"
-    from mainsequence.client import Constant as _C
-    constants_to_create = dict(
-        REFERENCE_RATE__UST=FLOATING_INDEX_NAME,
-    )
+    FLOATING_INDEX_NAME = "SOFR"
 
-    _C.create_constants_if_not_exist(constants_to_create)
 
     if unique_identifiers is None:
         unique_identifiers = ["TEST_FLOATING_BOND_UST", "TEST_FIXED_BOND_USD"]
@@ -69,7 +64,6 @@ def ensure_test_assets(unique_identifiers=None):
                 instrument = msi.FloatingRateBond(
                     **common_kwargs,
                     floating_rate_index_name=FLOATING_INDEX_NAME,
-                    issue_date=time_idx.date(),
                 )
             else:
                 instrument = msi.FixedRateBond(

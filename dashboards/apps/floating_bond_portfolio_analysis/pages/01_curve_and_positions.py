@@ -60,7 +60,7 @@ def _ensure_data_nodes() -> None:
         deps.get("instrument_pricing_table_id")
     except KeyError:
         # very important step so the prices cna be extracted from the right storage
-        from dashboards.apps.floating_portfolio_analysis.settings import PRICES_TABLE_NAME
+        from dashboards.apps.floating_bond_portfolio_analysis.settings import PRICES_TABLE_NAME
         deps.register(instrument_pricing_table_id=PRICES_TABLE_NAME)
 
     st.session_state["_deps_bootstrapped"] = True
