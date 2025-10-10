@@ -1,4 +1,4 @@
-# src/ui/components/curve_bump.py
+# dashboards/components/curve_bump.py
 from __future__ import annotations
 
 from typing import Dict, List, Optional, Tuple
@@ -96,3 +96,4 @@ def curve_bump_controls_ex(*,
     changed = ({"keyrate_bp": default_bumps or {}, "parallel_bp": float(default_parallel_bp)}
                != {"keyrate_bp": spec.keyrate_bp, "parallel_bp": float(spec.parallel_bp)})
     return spec, changed
+

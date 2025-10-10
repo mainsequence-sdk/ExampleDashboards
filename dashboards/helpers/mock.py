@@ -51,6 +51,7 @@ def ensure_test_assets(unique_identifiers=None):
         "settlement_days": 0,
         "maturity_date": time_idx.date() + datetime.timedelta(days=365 * 10),
         "issue_date": time_idx.date(),
+        "benchmark_rate_index_name":FLOATING_INDEX_NAME
     }
 
     created_assets = []
@@ -255,12 +256,12 @@ def build_test_portfolio(portfolio_name:str):
     PortfolioInterface.build_and_run_portfolio_from_df(portfolio_node=node,
                                                        add_portfolio_to_markets_backend=True)
 
-
-if __name__ == "__main__":
-    # Ensure assets exist once (reused by both portfolio + datanode)
+    #prices also need to be run to have a simulated impact
     assets = ensure_test_assets()
 
     # Instantiate and update the DataNode (platform would orchestrate this)
     prices_node = SimulatedDailyClosePrices(asset_list=assets)
-    prices_node.run(debug_mode=True,force_update=False)
+    prices_node.run(debug_mode=True, force_update=True)
+
+
 

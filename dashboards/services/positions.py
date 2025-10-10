@@ -9,6 +9,7 @@ import pandas as pd
 import QuantLib as ql  # evaluation date handling lives elsewhere; here we just rely on instruments' curves
 from dashboards.services.curves import zspread_from_dirty_ccy
 from mainsequence.instruments.instruments.position import Position, PositionLine
+import mainsequence.instruments as msi
 
 
 class PositionOperations:
@@ -41,6 +42,15 @@ class PositionOperations:
         # Valuation date (optional; QL Settings is assumed to be set upstream)
         self.valuation_date: Optional[dt.date] = None
 
+    @classmethod
+    def from_position(cls,position:Position,base_curves_by_index: Dict[str, ql.YieldTermStructureHandle],
+                      valuation_date:dt.date,
+                      ):
+        po=cls(position_template=position)
+        po.base_curves_by_index=base_curves_by_index
+        po.valuation_date=valuation_date
+        return po
+
     def _instantiate_from_template(
             self,
             template: Position,
@@ -57,10 +67,19 @@ class PositionOperations:
         for line in template.lines:
             inst = line.instrument.copy()
             inst.set_valuation_date(valuation_date)
-            idx_name = getattr(inst, "floating_rate_index_name", None)
-            if idx_name is None or idx_name not in index_curve_map:
-                raise KeyError(f"No curve provided for index '{idx_name}' during instantiation.")
+            if isinstance(inst, msi.FloatingRateBond):
+                idx_name = getattr(inst, "floating_rate_index_name", None)
+                if idx_name is None:
+                    raise KeyError(f"No curve provided for index '{idx_name}' during instantiation.")
+
+                if idx_name not in index_curve_map:
+                    raise KeyError(f"No curve provided for index '{idx_name}' during instantiation.")
+            elif isinstance(inst, msi.FixedRateBond):
+                idx_name = getattr(inst, "benchmark_rate_index_name", None)
+                if idx_name is None:
+                    raise  Exception(f"{inst} needs a benchmark_rate_index_name ")
             inst.reset_curve(index_curve_map[idx_name])
+
             xmi = dict(getattr(line, "extra_market_info", {}) or {})
             new_lines.append(
                 PositionLine(units=line.units, instrument=inst, extra_market_info=xmi)

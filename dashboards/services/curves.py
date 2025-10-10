@@ -34,7 +34,7 @@ _C.get_value(name="REFERENCE_RATE__TIIE_OVERNIGHT"):"TIIE",
 _C.get_value(name="REFERENCE_RATE__CETE_28"):"CETE",
 _C.get_value(name="REFERENCE_RATE__CETE_91"):"CETE",
 _C.get_value(name="REFERENCE_RATE__CETE_182"):"CETE",
-_C.get_value(name="REFERENCE_RATE__UST"):"UST",
+_C.get_value(name="REFERENCE_RATE__USD_SOFR"):"SOFR",
 
 }
 
@@ -57,7 +57,8 @@ def curve_family_key(index_uid: str) -> str:
 KEYRATE_GRID_BY_FAMILY = {
     "TIIE": ("28D","91D","182D","1Y","2Y","3Y","5Y","7Y","10Y","20Y","30Y"),
     "CETE": ("28D","91D","182D","1Y","2Y","3Y","5Y","7Y","10Y","20Y","30Y"),
-    "UST": {"30D","90D","180D","1Y","2Y","3Y","5Y","7Y","10Y","20Y","30Y" }
+    "UST": {"30D","90D","180D","1Y","2Y","3Y","5Y","7Y","10Y","20Y","30Y" },
+    "SOFR": {"30D", "90D", "180D", "1Y", "2Y", "3Y", "5Y", "7Y", "10Y", "20Y", "30Y"}
 }
 
 
