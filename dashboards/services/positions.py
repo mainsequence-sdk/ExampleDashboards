@@ -78,6 +78,8 @@ class PositionOperations:
                 idx_name = getattr(inst, "benchmark_rate_index_name", None)
                 if idx_name is None:
                     raise  Exception(f"{inst} needs a benchmark_rate_index_name ")
+            else:
+                raise Exception(f"{inst} is not a bond")
             inst.reset_curve(index_curve_map[idx_name])
 
             xmi = dict(getattr(line, "extra_market_info", {}) or {})

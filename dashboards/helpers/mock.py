@@ -256,6 +256,12 @@ def build_test_portfolio(portfolio_name:str):
     PortfolioInterface.build_and_run_portfolio_from_df(portfolio_node=node,
                                                        add_portfolio_to_markets_backend=True)
 
+    node = TestFixedIncomePortfolio(portfolio_name=portfolio_name+"_CLONE", calendar_name="24/7",
+                         target_portfolio_about="Test CLONE")
+
+    PortfolioInterface.build_and_run_portfolio_from_df(portfolio_node=node,
+                                                       add_portfolio_to_markets_backend=True)
+
     #prices also need to be run to have a simulated impact
     assets = ensure_test_assets()
 

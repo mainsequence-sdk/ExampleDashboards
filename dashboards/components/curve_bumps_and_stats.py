@@ -54,14 +54,13 @@ def _build_curve_maps(
 
 
 # ---------- the single component ----------
-def st_curve_bumps_curve_and_stats(
+def st_curve_bumps(
     *,
     position_template,
     valuation_date: dt.date,
     key_prefix: str = "curve_bundle",
     title: str = "Par yield curve — Base vs Bumped",
 ) -> Dict[str, Any]:
-
     # ---- read existing bump spec ----
     prev_map = (
         st.session_state.get(f"{key_prefix}_curve_bump_spec_by_family")
@@ -75,37 +74,32 @@ def st_curve_bumps_curve_and_stats(
     if not indices:
         st.info("No floating-rate indices found in the current position.")
         return {}
-    present_families = sorted({curve_family_key(i) for i in indices})
 
     # ---- build curves from current spec ----
     base_curves, bumped_curves = _build_curve_maps(valuation_date, indices, prev_map)
 
-    # ---- instantiate positions and apply z-spreads ----
+    # ---- instantiate a merged position (for overlays only) ----
     ops = PositionOperations.from_position(
         position_template,
         base_curves_by_index=base_curves,
         valuation_date=valuation_date,
     )
-    position = ops.instantiate_base()
+    base_pos = ops.instantiate_base()
     ops.set_curves(bumped_curves_by_index=bumped_curves)
-    bumped_position = ops.instantiate_bumped()
+    bumped_pos = ops.instantiate_bumped()
     ops.compute_and_apply_z_spreads_from_dirty_price(
-        base_position=position,
-        bumped_position=bumped_position,
+        base_position=base_pos,
+        bumped_position=bumped_pos,
     )
 
-    # ===================== CHART (overlay buttons BELOW) =====================
+    # ===================== CHART + OVERLAYS =====================
     st.subheader(title)
-    chart_slot = st.empty()  # reserve a spot for the chart above the buttons
-
-    # --- overlay UI appears *below* the chart slot ---
+    chart_slot = st.empty()
     overlay_traces = st_position_yield_overlay(
-        position=position,
+        position=base_pos,
         valuation_date=valuation_date,
         key=f"{key_prefix}_base_curve_position_overlay",
     )
-
-    # build fig and then place it into the reserved slot
     fig_curve = plot_par_yield_curves_by_family(
         base_curves=base_curves,
         bumped_curves=bumped_curves,
@@ -115,15 +109,15 @@ def st_curve_bumps_curve_and_stats(
     )
     for tr in overlay_traces:
         fig_curve.add_trace(tr)
+    chart_slot.plotly_chart(fig_curve, use_container_width=True,
+                            key=f"{key_prefix}_par_curve_main")
 
-    chart_slot.plotly_chart(fig_curve, use_container_width=True, key=f"{key_prefix}_par_curve_main")
-
-    # ===================== COMPACT BUMPS (GRID) =====================
+    # ===================== BUMPS (by family) =====================
     with st.expander("Curve bumps (by family)", expanded=True):
-        families_per_row = 4  # at least 4 per row
+        families_per_row = 4
+        present_families = sorted({curve_family_key(i) for i in indices})
         new_map: Dict[str, Dict[str, float]] = {}
 
-        # Compact spacing inside the expander (optional, safe)
         st.markdown("""
         <style>
           [data-testid="stExpander"] .stSlider, 
@@ -145,8 +139,8 @@ def st_curve_bumps_curve_and_stats(
                         default_bumps=(prev_map.get(fam, {}).get("keyrate_bp", {})),
                         default_parallel=float(prev_map.get(fam, {}).get("parallel_bp", 0.0)),
                         key_prefix=key_prefix,
-                        container=col,      # render inside this column
-                        header=fam,         # short header
+                        container=col,
+                        header=fam,
                     )
                     new_map[fam] = {
                         "keyrate_bp": spec.keyrate_bp,
@@ -159,70 +153,15 @@ def st_curve_bumps_curve_and_stats(
             st.session_state["curve_bump_spec_by_index"] = new_map
             st.rerun()
 
-    # ---- artifacts for downstream consumers ----
-    bundle = dict(
+    # artifacts for downstream consumers
+    return dict(
         base_curves=base_curves,
         bumped_curves=bumped_curves,
-        position=position,
-        bumped_position=bumped_position,
+        position=base_pos,           # merged (for overlays)
+        bumped_position=bumped_pos,  # merged (for overlays)
         fig_curve=fig_curve,
-        stats=locals().get("stats"),
-        carry_cutoff_date=locals().get("cutoff"),
     )
 
-    # ===================== COLLAPSIBLE STATS =====================
-    with st.expander("Portfolio statistics — Base vs Bumped", expanded=False):
-        default_carry_days = int(
-            st.session_state.get(
-                f"{key_prefix}_carry_cutoff_days",
-                st.session_state.get("carry_cutoff_days", 365),
-            )
-        )
-        carry_days = st.slider(
-            "Carry cutoff (days from valuation date)",
-            min_value=30, max_value=1460, step=30, value=default_carry_days,
-            key=f"{key_prefix}_carry_cutoff_days",
-            help="Set the forward horizon for carry aggregation.",
-        )
-        cutoff = valuation_date + dt.timedelta(days=carry_days)
-
-        stats = PositionOperations.portfolio_style_stats(
-            base_position=position,
-            bumped_position=bumped_position,
-            valuation_date=valuation_date,
-            cutoff=cutoff,
-        )
-
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("NPV (base)", fmt_ccy(stats["npv_base"]), delta=fmt_ccy(stats["npv_delta"]))
-        c2.metric("NPV (bumped)", fmt_ccy(stats["npv_bumped"]))
-        c3.metric(f"Carry to {cutoff.isoformat()} (base)", fmt_ccy(stats["carry_base"]), delta=fmt_ccy(stats["carry_delta"]))
-        c4.metric(f"Carry to {cutoff.isoformat()} (bumped)", fmt_ccy(stats["carry_bumped"]))
-
-        st.subheader("Positions — NPV (paginated)")
-        po = st.session_state.get("_portfolio_operations")
-        if po is None:
-            active_id = st.session_state.get("_active_portfolio_id")
-            if active_id is not None:
-                active_port = msc.PortfolioIndexAsset.get_or_none(id=int(active_id))
-                if active_port is not None:
-                    po = PortfoliosOperations(portfolio_list=[active_port])
-                    st.session_state["_portfolio_operations"] = po
-
-        if po is not None and bundle:
-            po.st_position_npv_table_paginated(
-                position=bundle["position"],
-                instrument_hash_to_asset=st.session_state.get("instrument_hash_to_asset"),
-                bumped_position=bundle["bumped_position"],
-                page_size_options=(25, 50, 100, 200),
-                default_size=50,
-                enable_search=True,
-                key="npv_table_curve_page",
-            )
-        else:
-            st.info("Select or rebuild a portfolio to display the positions table.")
-
-    return bundle
 
 
 

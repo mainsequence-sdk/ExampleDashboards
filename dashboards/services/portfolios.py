@@ -29,7 +29,8 @@ import mainsequence.instruments as msi
 import pytz
 from dashboards.core.data_nodes import get_app_data_nodes
 from mainsequence.instruments.instruments.position import Position
-
+from .positions import PositionOperations
+import hashlib
 # ─────────────────────────────────────────────────────────────────────────────
 # Helper functions (pure; no side effects)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -440,6 +441,15 @@ def weighted_duration_by_maturity_bucket_df(
 # Main class
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _scoped_key(root: str, pos: Position) -> str:
+    """Append a short stable salt derived from the position's line hashes."""
+    try:
+        sig = "|".join(sorted(str(ln.instrument.content_hash()) for ln in pos.lines))
+    except Exception:
+        sig = f"lines={len(getattr(pos, 'lines', []))}"
+    salt = hashlib.sha1(sig.encode()).hexdigest()[:8]
+    return f"{root}__{salt}"
+
 class PortfoliosOperations:
     """
     Cohesive engine for portfolio analytics. Everything you need lives here:
@@ -454,6 +464,8 @@ class PortfoliosOperations:
     def __init__(self, portfolio_list: List[msc.Portfolio], *, valmer_node_identifier: str = "vector_de_precios_valmer"):
         self.portfolio_list = portfolio_list
         self._valmer_node_identifier = valmer_node_identifier
+
+
 
     def set_portfolio_positions(
             self,
@@ -1132,19 +1144,32 @@ class PortfoliosOperations:
         # ---------------------------------------------------------------------
 
     def st_position_npv_table_paginated(
-            self,
-            *,
-            position: Position,
-            instrument_hash_to_asset: Mapping[object, msc.Asset] | None,
-            bumped_position: Position | None = None,
-            page_size_options: tuple[int, ...] = (25, 50, 100, 200),
-            default_size: int = 50,
-            enable_search: bool = True,
-            key: str = "npv_table",
+        self,
+        *,
+        position: Position,
+        instrument_hash_to_asset: Mapping[object, msc.Asset] | None,
+        bumped_position: Position | None = None,
+        page_size_options: tuple[int, ...] = (25, 50, 100, 200),
+        default_size: int = 50,
+        enable_search: bool = True,
+        key: str = "npv_table",
+        render_once: bool = True,
+        valuation_date: "datetime.date | None" = None,
+        carry_days: int = 365,
+        show_stats: bool = True,
     ) -> None:
+        import math
         import pandas as pd
         import streamlit as st
-        import math
+        import datetime as dt  # local alias
+
+        # --- render-once guard (per page run) ---------------------------------
+        if render_once:
+            _counter_key = "__npv_tables_rendered"
+            st.session_state[_counter_key] = int(st.session_state.get(_counter_key, 0))
+            if st.session_state[_counter_key] >= 1:
+                return
+            st.session_state[_counter_key] += 1
 
         # --- resolve portfolio_name for this position (via stored map) ---
         def _portfolio_name_for_position() -> str:
@@ -1156,10 +1181,8 @@ class PortfoliosOperations:
             if pid is not None:
                 for p in self.portfolio_list:
                     if getattr(p, "id", None) == pid:
-                        # prefer 'portfolio_name' if present (as used elsewhere in your file)
                         return getattr(p, "portfolio_name", getattr(p, "name", f"Portfolio {pid}"))
                 return f"Portfolio {pid}"
-            # fallback: single active portfolio, if any
             if self.portfolio_list:
                 p0 = self.portfolio_list[0]
                 return getattr(p0, "portfolio_name", getattr(p0, "name", "Portfolio"))
@@ -1167,7 +1190,35 @@ class PortfoliosOperations:
 
         portfolio_name = _portfolio_name_for_position()
 
-        # --- index bumped lines by content hash (string) if provided ---
+        # --- optional STATS BOXES (above the table) ---------------------------
+        if show_stats and valuation_date is not None:
+            cutoff = valuation_date + dt.timedelta(days=int(carry_days))
+            # If bumped_position is None, use base to get a zero delta
+            bp = bumped_position if bumped_position is not None else position
+            stats = PositionOperations.portfolio_style_stats(
+                base_position=position,
+                bumped_position=bp,
+                valuation_date=valuation_date,
+                cutoff=cutoff,
+            )
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric(
+                f"{portfolio_name} — NPV (base)",
+                f"{stats['npv_base']:,.2f}",
+                delta=f"{stats['npv_delta']:,.2f}",
+            )
+            c2.metric("NPV (bumped)", f"{stats['npv_bumped']:,.2f}")
+            c3.metric(
+                f"Carry to {cutoff.isoformat()} (base)",
+                f"{stats['carry_base']:,.2f}",
+                delta=f"{stats['carry_delta']:,.2f}",
+            )
+            c4.metric(
+                f"Carry to {cutoff.isoformat()} (bumped)",
+                f"{stats['carry_bumped']:,.2f}",
+            )
+
+        # --- index bumped lines by content hash (string) if provided ----------
         bump_idx: dict[str, Any] = {}
         if bumped_position is not None:
             for bl in bumped_position.lines:
@@ -1176,11 +1227,10 @@ class PortfoliosOperations:
                 except Exception:
                     pass
 
-        # --- build rows ---
+        # --- build rows -------------------------------------------------------
         rows: list[dict] = []
         for ln in position.lines:
             inst = ln.instrument
-            # key used for asset map lookup: KEEP the original hash object (not str)
             try:
                 hash_key = inst.content_hash()
                 hash_str = str(hash_key)
@@ -1197,10 +1247,10 @@ class PortfoliosOperations:
             npv_base = units * price_base if price_base == price_base else float("nan")
 
             # bumped (only if provided; no computation here)
-            price_bumped = None
-            npv_bumped = None
-            npv_delta = None
-            if hash_str and hash_str in bump_idx:
+            price_bumped = float("nan")
+            npv_bumped = float("nan")
+            npv_delta = float("nan")
+            if hash_str in bump_idx:
                 try:
                     price_bumped = float(bump_idx[hash_str].instrument.price())
                     npv_bumped = units * price_bumped
@@ -1208,26 +1258,27 @@ class PortfoliosOperations:
                 except Exception:
                     pass
 
-            # unique_identifier comes from the provided asset map (no JSON fallbacks)
             uid = None
             if instrument_hash_to_asset is not None and hash_key in instrument_hash_to_asset:
                 try:
-                    uid = getattr(instrument_hash_to_asset[hash_key], "unique_identifier", None)
+                    uid = instrument_hash_to_asset[hash_key].unique_identifier
                 except Exception:
                     uid = None
 
             ms_asset_id = getattr(inst, "main_sequence_asset_id", None)
-            inst_type = getattr(inst, "instrument_type", type(inst).__name__)
-
-            # 'Details' link: route recognizes ?asset_id=
-            details_url = f"?asset_id={hash_str or (ms_asset_id if ms_asset_id is not None else '')}"
+            inst_type = type(inst).__name__
+            reference_index = (
+                getattr(ln.instrument, "floating_rate_index_name", None)
+                or getattr(ln.instrument, "benchmark_rate_index_name", None)
+            )
+            details_url = f"?asset_id={ms_asset_id}"
 
             rows.append(
                 {
                     "portfolio_name": portfolio_name,
                     "instrument_type": inst_type,
+                    "curve_reference_index": reference_index,
                     "unique_identifier": uid,
-                    "content_hash": hash_str,
                     "ms_asset_id": ms_asset_id,
                     "units": units,
                     "price_base": price_base,
@@ -1245,35 +1296,58 @@ class PortfoliosOperations:
 
         df = pd.DataFrame(rows)
 
-        # --- search ---
+        # --- search -----------------------------------------------------------
         if enable_search:
-            q = st.text_input("Search", value="", key=f"{key}_search", placeholder="Filter by portfolio, UID, type…")
+            q = st.text_input(
+                "Search",
+                value="",
+                key=f"{_scoped_key(key, position)}_search",
+                placeholder="Filter by portfolio, UID, type…",
+            )
             if q:
                 ql = q.strip().lower()
-                mask = (
-                        df["portfolio_name"].fillna("").str.lower().str.contains(ql)
-                        | df["instrument_type"].fillna("").str.lower().str.contains(ql)
-                        | df["unique_identifier"].fillna("").astype(str).str.lower().str.contains(ql)
-                        | df["content_hash"].fillna("").astype(str).str.lower().str.contains(ql)
-                        | df["ms_asset_id"].fillna("").astype(str).str.lower().str.contains(ql)
-                )
-                df = df.loc[mask].reset_index(drop=True)
+                search_cols = [
+                    "portfolio_name",
+                    "instrument_type",
+                    "unique_identifier",
+                    "ms_asset_id",
+                    "curve_reference_index",
+                ]
+                mask = None
+                for c in search_cols:
+                    if c in df.columns:
+                        m = df[c].fillna("").astype(str).str.lower().str.contains(ql)
+                        mask = m if mask is None else (mask | m)
+                if mask is not None:
+                    df = df.loc[mask].reset_index(drop=True)
 
-        # --- pagination ---
+
+        # --- pagination -------------------------------------------------------
         page_size_options = tuple(page_size_options) if page_size_options else (25, 50, 100, 200)
         if default_size not in page_size_options:
             default_size = page_size_options[0]
-        page_size = st.selectbox("Rows per page", page_size_options,
-                                 index=page_size_options.index(default_size), key=f"{key}_pagesize")
+        page_size = st.selectbox(
+            "Rows per page",
+            page_size_options,
+            index=page_size_options.index(default_size),
+            key=f"{_scoped_key(key, position)}_pagesize",
+        )
 
         total = len(df)
         pages = max(1, math.ceil(total / page_size))
-        curr_page = st.number_input("Page", min_value=1, max_value=pages, value=1, step=1, key=f"{key}_page")
+        curr_page = st.number_input(
+            "Page",
+            min_value=1,
+            max_value=pages,
+            value=1,
+            step=1,
+            key=f"{_scoped_key(key, position)}_page",
+        )
         start = (curr_page - 1) * page_size
         end = start + page_size
         page_df = df.iloc[start:end].reset_index(drop=True)
-        currency_symbol=None
-        # --- render ---
+
+        # --- render table -----------------------------------------------------
         st.data_editor(
             page_df,
             use_container_width=True,
@@ -1283,28 +1357,21 @@ class PortfoliosOperations:
                 "portfolio_name": st.column_config.TextColumn("Portfolio"),
                 "instrument_type": st.column_config.TextColumn("Type"),
                 "unique_identifier": st.column_config.TextColumn("Unique ID"),
-                "content_hash": st.column_config.TextColumn("Content hash"),
+                "curve_reference_index": st.column_config.TextColumn("Curve Reference"),
                 "ms_asset_id": st.column_config.NumberColumn("MS Asset ID"),
-                "units": st.column_config.NumberColumn("Units", format="%.2f"),
-                "price_base": st.column_config.NumberColumn("Price (base)", format="%.6f"),
-                "price_bumped": st.column_config.NumberColumn("Price (bumped)", format="%.6f"),
-                "npv_base": st.column_config.NumberColumn(
-                    f"NPV (base){' ' + currency_symbol if currency_symbol else ''}", format="%,.2f"
-                ),
-                "npv_bumped": st.column_config.NumberColumn(
-                    f"NPV (bumped){' ' + currency_symbol if currency_symbol else ''}", format="%,.2f"
-                ),
-                "npv_delta": st.column_config.NumberColumn(
-                    f"ΔNPV{' ' + currency_symbol if currency_symbol else ''}", format="%,.2f"
-                ),
+                "units": st.column_config.NumberColumn("Units", format="accounting"),
+                "price_base": st.column_config.NumberColumn("Price (base)", format="accounting"),
+                "price_bumped": st.column_config.NumberColumn("Price (bumped)", format="accounting"),
+                "npv_base": st.column_config.NumberColumn("NPV (base)", format="accounting"),
+                "npv_bumped": st.column_config.NumberColumn("NPV (bumped)", format="accounting"),
+                "npv_delta": st.column_config.NumberColumn("ΔNPV", format="accounting"),
                 "details": st.column_config.LinkColumn("Details"),
             },
             column_order=[
                 "portfolio_name",
                 "instrument_type",
                 "unique_identifier",
-                "content_hash",
-                "ms_asset_id",
+                "curve_reference_index",
                 "units",
                 "price_base",
                 "price_bumped",
@@ -1313,15 +1380,15 @@ class PortfoliosOperations:
                 "npv_delta",
                 "details",
             ],
-            key=f"{key}_editor",
+            key=f"{_scoped_key(key, position)}_editor",
         )
 
-        # CSV (filtered, without 'details' link)
+        # --- CSV (filtered, without 'details' link) ---------------------------
         csv_cols = [c for c in df.columns if c != "details"]
         st.download_button(
             "Download CSV",
             data=df[csv_cols].to_csv(index=False).encode("utf-8"),
-            file_name="positions_npv.csv",
+            file_name=f"positions_npv_{portfolio_name.replace(' ','_')}.csv",
             mime="text/csv",
-            key=f"{key}_csv",
+            key=f"{_scoped_key(key, position)}_csv",
         )
