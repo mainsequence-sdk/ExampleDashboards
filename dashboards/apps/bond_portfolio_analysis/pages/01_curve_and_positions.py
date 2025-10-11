@@ -18,8 +18,7 @@ import mainsequence.instruments as msi
 from dashboards.core.data_nodes import get_app_data_nodes
 from dashboards.components.curve_bumps_and_stats import st_curve_bumps
 from mainsequence.dashboards.streamlit.scaffold import PageConfig, run_page
-from dashboards.helpers.mock import build_test_portfolio as _build_test_portfolio
-
+import dashboards.components.portfolio_select as portsel
 
 # Page setup
 ctx = run_page(PageConfig(
@@ -53,6 +52,39 @@ def _do_build_mock_if_requested() -> None:
         st.rerun()
     except Exception as e:
         st.exception(e)
+
+def _dedupe_portfolios(port_list: List[Any]) -> List[Any]:
+    """Keep the last occurrence per id; ignore items without a valid id."""
+    seen: Dict[int, Any] = {}
+    for p in port_list:
+        pid_raw = getattr(p, "id", None)
+        if pid_raw is None:
+            continue
+        try_id = int(pid_raw) if str(pid_raw).lstrip("-").isdigit() else None
+        if try_id is None:
+            continue
+        seen[try_id] = p
+    return list(seen.values())
+
+
+
+def _flatten_group_portfolios(group_obj: Any) -> List[Any]:
+    """
+    PortfolioGroup.portfolios may contain ints or Portfolio objects.
+    Resolve ints via PortfolioIndexAsset; keep objects as-is.
+    """
+    out: List[Any] = []
+    plist = getattr(group_obj, "portfolios", []) or []
+    for entry in plist:
+        if hasattr(entry, "id"):  # already a Portfolio-like object
+            out.append(entry)
+        else:
+            s = str(entry)
+            if s.lstrip("-").isdigit():
+                p = msc.PortfolioIndexAsset.get_or_none(id=int(s))
+                if p is not None:
+                    out.append(p)
+    return out
 
 # --- Minimal data-nodes bootstrap (needed by portfolios.py) ---
 def _ensure_data_nodes() -> None:
@@ -98,14 +130,41 @@ with st.sidebar:
     _do_build_mock_if_requested()
 
     selected_instances = sidebar_portfolio_multi_select(
-        title="Portfolios (search & multi-select)",
+        title="Portfolios (search)",
         key_prefix="fpa_portfolios",
         min_chars=3,
     )
 
-    if selected_instances:
-        selected_ports = [ia.reference_portfolio for ia in selected_instances]
-        selected_ids = tuple(sorted(int(getattr(p, "id", p)) for p in selected_ports))
+    # Optional: also search/select portfolio GROUPS, then flatten to portfolios.
+    include_groups = st.toggle("Include portfolio groups", value=True, key="fpa_include_groups")
+    selected_group_instances = []
+    if include_groups and hasattr(portsel, "sidebar_portfolio_group_multi_select"):
+        selected_group_instances = portsel.sidebar_portfolio_group_multi_select(
+            title="Portfolio groups (search & multi-select)",
+            key_prefix="fpa_groups",
+            min_chars=3,
+        )
+
+    if selected_instances or selected_group_instances:
+        # 1) direct portfolios from the portfolio picker
+        selected_ports: List[Any] = []
+        for ia in (selected_instances or []):
+            refp = getattr(ia, "reference_portfolio", None)
+            if refp is not None:
+                selected_ports.append(refp)
+
+        # 2) portfolios coming from selected groups
+        for gi in (selected_group_instances or []):
+            grp = getattr(gi, "reference_group", None) or gi  # accept raw group too
+            selected_ports.extend(_flatten_group_portfolios(grp))
+
+        # 3) dedupe by id
+        selected_ports = _dedupe_portfolios(selected_ports)
+        if not selected_ports:
+            st.info("Select one or more portfolios or groups to continue.")
+            st.stop()
+
+        selected_ids = tuple(sorted(int(getattr(p, "id", 0)) for p in selected_ports))
         last_ids = tuple(st.session_state.get("_active_portfolio_ids", ()))
         last_notional = float(st.session_state.get("_active_notional", 0.0) or 0.0)
 
@@ -202,10 +261,7 @@ for pid, tab in zip(ordered_ids, tabs):
     one_po = PortfoliosOperations(portfolio_list=[ports_by_id.get(pid)]) if ports_by_id.get(pid) else None
     if one_po is None:
         continue
-    try:
-        one_po.set_portfolio_positions({pid: base_pos})
-    except Exception:
-        pass
+    one_po.set_portfolio_positions({pid: base_pos})
 
     with tab:
         st.caption(f"Valuation date: {iso_date}")

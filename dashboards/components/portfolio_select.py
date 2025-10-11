@@ -198,44 +198,30 @@ def _search_portfolio_groups(q: str) -> List[Dict[str, Any]]:
     results_by_id: Dict[int, Any] = {}
 
     # Search by display_name
-    try:
-        by_name = msc.PortfolioGroup.filter(display_name__contains=q)
-        for g in (by_name or []):
-            gid = getattr(g, "id", None)
-            if gid is not None:
-                results_by_id[gid] = g
-    except Exception:
-        pass
+    by_name = msc.PortfolioGroup.filter(display_name__contains=q)
+    for g in (by_name or []):
+        results_by_id[g.id] = g
 
     # Search by unique_identifier
-    try:
-        by_uid = msc.PortfolioGroup.filter(unique_identifier__contains=q)
-        for g in (by_uid or []):
-            gid = getattr(g, "id", None)
-            if gid is not None:
-                results_by_id[gid] = g
-    except Exception:
-        pass
+    by_uid = msc.PortfolioGroup.filter(unique_identifier__contains=q)
+    for g in (by_uid or []):
+        results_by_id[g.id] = g
+
 
     out: List[Dict[str, Any]] = []
     for g in results_by_id.values():
-        try:
-            gid = getattr(g, "id", None)
-            if gid is None:
-                continue
-            uid = getattr(g, "unique_identifier", None)
-            name = getattr(g, "display_name", None) or uid or f"group:{gid}"
-            out.append({
-                "id": gid,
-                "display_name": name,
-                "unique_identifier": uid,
-                "instance": g,
-            })
-        except Exception:
-            pass
+        gid=g.id
+        uid = g.unique_identifier
+        name = g.display_name
+        out.append({
+            "id": gid,
+            "display_name": name,
+            "unique_identifier": uid,
+            "instance": g,
+        })
 
     # Nice ordering by display name (fallback to uid)
-    out.sort(key=lambda r: (r.get("display_name") or r.get("unique_identifier") or "").lower())
+    out.sort(key=lambda r: r.get("display_name").lower())
     return out
 
 

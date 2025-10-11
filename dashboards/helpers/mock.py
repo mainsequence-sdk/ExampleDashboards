@@ -253,13 +253,13 @@ def build_test_portfolio(portfolio_name:str):
     node = TestFixedIncomePortfolio(portfolio_name=portfolio_name, calendar_name="24/7",
                          target_portfolio_about="Test")
 
-    PortfolioInterface.build_and_run_portfolio_from_df(portfolio_node=node,
+    target_portfolio_1, _=PortfolioInterface.build_and_run_portfolio_from_df(portfolio_node=node,
                                                        add_portfolio_to_markets_backend=True)
 
     node = TestFixedIncomePortfolio(portfolio_name=portfolio_name+"_CLONE", calendar_name="24/7",
                          target_portfolio_about="Test CLONE")
 
-    PortfolioInterface.build_and_run_portfolio_from_df(portfolio_node=node,
+    target_portfolio_2, _=PortfolioInterface.build_and_run_portfolio_from_df(portfolio_node=node,
                                                        add_portfolio_to_markets_backend=True)
 
     #prices also need to be run to have a simulated impact
@@ -269,5 +269,11 @@ def build_test_portfolio(portfolio_name:str):
     prices_node = SimulatedDailyClosePrices(asset_list=assets)
     prices_node.run(debug_mode=True, force_update=True)
 
+
+    # assign both portfolios to portfolio groups
+    portfolio_group=msc.PortfolioGroup.get_or_create(display_name="Mock Bond Portfolio Group",
+                                                     unique_identifier="mock_portfolio_group",
+                    portfolio_ids=[target_portfolio_1.id,target_portfolio_2.id],
+                      description="Mock Portfolio Group for Tutorial")
 
 
