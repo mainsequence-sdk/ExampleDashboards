@@ -486,7 +486,9 @@ class PortfoliosOperations:
         """All available signal rows (not just latest), one frame for all portfolios."""
         parts = []
         for p in self.portfolio_list:
-            df = p.signal_local_time_serie.get_data_between_dates_from_api()
+            if p.signal_data_node_update is None:
+                continue
+            df = p.signal_data_node_update.get_data_between_dates_from_api()
             if df is None or df.empty:
                 continue
             df = df.copy()
@@ -495,7 +497,8 @@ class PortfoliosOperations:
             parts.append(df[["time_index", "portfolio_name", "unique_identifier", "signal_weight"]])
 
         if not parts:
-            raise RuntimeError("No signals found for selected portfolios.")
+            return None
+
         return pd.concat(parts, axis=0, ignore_index=True)
 
     # ---------- Public signals snapshot (latest per portfolio) ----------
@@ -506,6 +509,8 @@ class PortfoliosOperations:
         Index: ['time_index','portfolio_name'] (UTC-naive), columns: ['unique_identifier','signal_weight'].
         """
         all_signals = self._signals_all
+        if all_signals is None:
+            return None
         max_per_port = all_signals.groupby("portfolio_name")["time_index"].transform("max")
         snap = (
             all_signals.loc[all_signals["time_index"].eq(max_per_port)]
@@ -522,6 +527,8 @@ class PortfoliosOperations:
     @cached_property
     def unique_identifiers(self) -> List[str]:
         """Universe of assets from the latest snapshots."""
+        if self.signals is None:
+            return None
         return sorted(self.signals["unique_identifier"].astype(str).unique().tolist())
 
     # ---------- Prices (portfolio NAV/close) ----------
@@ -562,13 +569,13 @@ class PortfoliosOperations:
 
     # ---------- Valmer panels (assets) ----------
     @cached_property
-    def _valmer_panels(self) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    def _column_panels(self) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
         """
         Fetch Valmer panels for all unique_identifiers starting at min_date_signals.
         Returns: (prices, duration, maturity)
         """
         if not self.unique_identifiers:
-            raise RuntimeError("Valmer panels requested but no unique identifiers discovered.")
+            return None, None, None
         node = APIDataNode.build_from_identifier(identifier=self._valmer_node_identifier)
         rd = {uid: {"start_date": self.min_date_signals, "start_date_operand": ">="} for uid in self.unique_identifiers}
         info = node.get_ranged_data_per_asset(range_descriptor=rd)
@@ -580,15 +587,15 @@ class PortfoliosOperations:
 
     @cached_property
     def valmer_prices_panel(self) -> pd.DataFrame:
-        return self._valmer_panels[0]
+        return self._column_panels[0]
 
     @cached_property
     def valmer_duration_panel(self) -> pd.DataFrame:
-        return self._valmer_panels[1]
+        return self._column_panels[1]
 
     @cached_property
     def valmer_maturity_panel(self) -> pd.DataFrame:
-        return self._valmer_panels[2]
+        return self._column_panels[2]
 
     # ---------- Convenience snapshots from panels ----------
     def maturity_snapshot(self, asof: Optional[pd.Timestamp] = None) -> pd.Series:
@@ -702,6 +709,9 @@ class PortfoliosOperations:
         Build and (optionally) render a Streamlit table of token weight sums.
         Returns the aggregated df if `return_df=True`, otherwise None.
         """
+        if self.signals is None:
+            return None
+
         agg_df = self.sum_signal_weights_by_identifier(
             self.signals,
             unique_identifier_filter,

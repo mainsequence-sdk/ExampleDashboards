@@ -21,6 +21,14 @@ dependencies = [
   "streamlit>=1.50.0",
 ]
 
+[project.optional-dependencies]
+dev = [
+  "ruff>=0.6.9",
+  "black>=24.8.0",
+]
+
 # Explicitly exclude package finding, as this is an application, not a library
 [tool.setuptools.packages.find]
 exclude = ["*"]
+
+

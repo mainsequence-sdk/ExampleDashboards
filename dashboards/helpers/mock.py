@@ -16,7 +16,9 @@ import QuantLib as ql
 UTC = pytz.utc
 
 
-
+SECURITY_TYPE_MOCK="MOCK_ASSET"
+SIMULATED_PRICES_TABLE="simulated_daily_closes_tutorial"
+TRANSLATION_TABLE_IDENTIFIER = "prices_translation_table_1d"
 # =========================================================
 # 1) DRY helper: ensure both test assets exist and have pricing details
 # =========================================================
@@ -29,7 +31,7 @@ def ensure_test_assets(unique_identifiers=None):
 
 
     if unique_identifiers is None:
-        unique_identifiers = ["TEST_FLOATING_BOND_UST", "TEST_FIXED_BOND_USD"]
+        unique_identifiers = ["TEST_FLOATING_BOND_UST_R", "TEST_FIXED_BOND_USD_R"]
 
     # Fetch any existing
     existing_assets = msc.Asset.filter(unique_identifier__in=unique_identifiers)  # cookbook filtering
@@ -73,8 +75,11 @@ def ensure_test_assets(unique_identifiers=None):
                 )
 
             # Minimal registration payload for a custom asset (keeps your approach)
+            #We Add this custom security_type so we can use a translation table and point to the right prices
+
             payload_item = {
                 "unique_identifier": uid,
+                "security_type":SECURITY_TYPE_MOCK,
                 "snapshot": {"name": uid, "ticker": uid},
             }
             # Your environment already uses this utility; keep it DRY.
@@ -124,7 +129,7 @@ class SimulatedDailyClosePrices(DataNode):
 
     def get_table_metadata(self):
         return msc.TableMetaData(
-            identifier="simulated_daily_closes_f1_v1",
+            identifier=SIMULATED_PRICES_TABLE,
             data_frequency_id=msc.DataFrequency.one_d,
             description="Daily close prices simulated via lognormal steps."
         )
@@ -193,6 +198,16 @@ class SimulatedDailyClosePrices(DataNode):
         wide = pd.concat(frames, axis=1)                        # columns = unique_identifiers
         long = wide.melt(ignore_index=False, var_name="unique_identifier", value_name="close")
         long = long.set_index("unique_identifier", append=True) # -> (time_index, unique_identifier)
+        long["open"]=long["close"]
+        long["high"]=long["close"]
+        long["low"]=long["close"]
+        long["volume"] = 0.0
+        long["duration"]=6.5
+        long["duration"] = 6.5
+        long["open_time"]=long.reset_index()["time_index"].view("int64").values
+        long["first_trade_time"] = long["open_time"]
+        long["last_trade_time"] = long["open_time"]
+
         return long
 
 
@@ -249,6 +264,119 @@ class TestFixedIncomePortfolio(PortfolioFromDF):
             portoflio_df = portoflio_df[portoflio_df.index > self.update_statistics.max_time_index_value]
         return portoflio_df
 
+
+
+
+
+def build_test_portfolio_with_signals():
+    from mainsequence.virtualfundbuilder.contrib.data_nodes.market_cap import FixedWeights, AUIDWeight
+    from mainsequence.virtualfundbuilder.models import (AssetsConfiguration,
+                                                        PricesConfiguration,PortfolioBuildConfiguration,
+                                                        BacktestingWeightsConfig,PortfolioExecutionConfiguration,
+                                                        PortfolioMarketsConfig
+                                                        )
+    from mainsequence.virtualfundbuilder.data_nodes import PortfolioStrategy
+    from mainsequence.virtualfundbuilder.contrib.rebalance_strategies import ImmediateSignal
+
+    assets = ensure_test_assets()
+    # Instantiate and update the DataNode (platform would orchestrate this)
+    # prices_node = SimulatedDailyClosePrices(asset_list=assets)
+    # prices_node.run(debug_mode=True, force_update=True)
+
+    asset_category=msc.AssetCategory.get_or_create(display_name="Mock Category Assets Tutorial",
+                                    unique_identifier="mock_category_assets_tutorial",
+                                    )
+    asset_category.append_assets(assets=assets)
+
+    weights= [.4, .6]
+    node_weights_input_1,node_weights_input_2 =[], []
+    for c, a in enumerate(assets):
+        node_weights_input_1.append(AUIDWeight(unique_identifier=a.unique_identifier,
+                                               weight=weights[c]))
+        node_weights_input_2.append(AUIDWeight(unique_identifier=a.unique_identifier,
+                                               weight=weights[c]*1.05))
+
+
+    translation_table=msc.AssetTranslationTable.get_or_create(translation_table_identifier=TRANSLATION_TABLE_IDENTIFIER,
+                      rules=[
+                                msc.AssetTranslationRule(
+                                    asset_filter=msc.AssetFilter(
+                                        security_type=SECURITY_TYPE_MOCK,
+                                    ),
+                                    markets_time_serie_unique_identifier=SIMULATED_PRICES_TABLE,
+                                ),
+
+                            ]
+                                                              )
+
+
+    prices_configuration=PricesConfiguration(bar_frequency_id = "1d",
+                                            upsample_frequency_id = "1d",
+                                            intraday_bar_interpolation_rule = "ffill",
+                                            is_live = False,
+                                            translation_table_unique_id = TRANSLATION_TABLE_IDENTIFIER,
+                                            forward_fill_to_now = False)
+
+    assets_configuration=AssetsConfiguration(assets_category_unique_id="mock_category_assets_tutorial",
+                        price_type="close",
+                        prices_configuration=prices_configuration,
+                        )
+
+
+    signal_weights_node_1 = FixedWeights(asset_unique_identifier_weights=node_weights_input_1,
+                        signal_assets_configuration=assets_configuration,
+                        )
+    signal_weights_node_2 = FixedWeights(asset_unique_identifier_weights=node_weights_input_2,
+                        signal_assets_configuration=assets_configuration,
+                        )
+
+
+
+    #portfolio
+    def build_portfolio(portfolio_name,signal_node):
+        portfolio_execution_configuration=PortfolioExecutionConfiguration(commission_fee=0.0)
+        rebalance_strategy=ImmediateSignal(calendar="SIFMAUS") # US bond market (SIFMA) calendar
+
+        backtest_weight_configuration=BacktestingWeightsConfig.build_from_rebalance_strategy_and_signal_node(rebalance_strategy=rebalance_strategy,
+                                                                                     signal_weights_node=signal_node,
+                                                                                     )
+
+        portfolio_build_configuration=PortfolioBuildConfiguration(assets_configuration=assets_configuration,
+                                                                  portfolio_prices_frequency="1d",
+                                                                  execution_configuration=portfolio_execution_configuration,
+                                                                  backtesting_weights_configuration=backtest_weight_configuration
+                                                                  )
+
+        portfolio_data_node=PortfolioStrategy(portfolio_build_configuration=portfolio_build_configuration,)
+        portfolio_markets_config=PortfolioMarketsConfig(portfolio_name=portfolio_name,
+                                                        )
+
+
+        interface=PortfolioInterface.build_from_portfolio_node(portfolio_node=portfolio_data_node,portfolio_markets_config=portfolio_markets_config)
+
+        res = interface.run(
+            patch_build_configuration=False,
+            debug_mode=True,
+            portfolio_tags=None,
+            add_portfolio_to_markets_backend=True,
+        )
+
+        return interface.target_portfolio
+
+    portfolio_1=build_portfolio(portfolio_name="Mock Portfolio 1 With Signals Tutorial",
+                                     signal_node=signal_weights_node_1
+                                     )
+
+    portfolio_2 = build_portfolio(portfolio_name="Mock Portfolio 2 With Signals Tutorial",
+                                       signal_node=signal_weights_node_2
+                                       )
+
+    portfolio_group = msc.PortfolioGroup.get_or_create(display_name="Mock Bond Portfolio with Signals Group",
+                                                       unique_identifier="mock_portfolio_signal_group",
+                                                       portfolio_ids=[portfolio_1.id, portfolio_2.id],
+                                                       description="Mock Portfolio Group for Tutorial")
+
+
 def build_test_portfolio(portfolio_name:str):
     node = TestFixedIncomePortfolio(portfolio_name=portfolio_name, calendar_name="24/7",
                          target_portfolio_about="Test")
@@ -265,9 +393,9 @@ def build_test_portfolio(portfolio_name:str):
     #prices also need to be run to have a simulated impact
     assets = ensure_test_assets()
 
-    # Instantiate and update the DataNode (platform would orchestrate this)
-    prices_node = SimulatedDailyClosePrices(asset_list=assets)
-    prices_node.run(debug_mode=True, force_update=True)
+
+
+
 
 
     # assign both portfolios to portfolio groups
@@ -277,3 +405,4 @@ def build_test_portfolio(portfolio_name:str):
                       description="Mock Portfolio Group for Tutorial")
 
 
+build_test_portfolio_with_signals()
