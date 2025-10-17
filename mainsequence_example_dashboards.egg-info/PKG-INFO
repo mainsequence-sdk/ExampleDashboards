@@ -8,3 +8,6 @@ Requires-Dist: python-dotenv
 Requires-Dist: xlrd
 Requires-Dist: plotly
 Requires-Dist: streamlit>=1.50.0
+Provides-Extra: dev
+Requires-Dist: ruff>=0.6.9; extra == "dev"
+Requires-Dist: black>=24.8.0; extra == "dev"

@@ -2,3 +2,6 @@ from dashboards.helpers.mock import SIMULATED_PRICES_TABLE
 
 
 PRICES_TABLE_NAME=SIMULATED_PRICES_TABLE
+
+
+
