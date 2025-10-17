@@ -1,0 +1,7 @@
+pyproject.toml
+mainsequence_example_dashboards.egg-info/PKG-INFO
+mainsequence_example_dashboards.egg-info/SOURCES.txt
+mainsequence_example_dashboards.egg-info/dependency_links.txt
+mainsequence_example_dashboards.egg-info/requires.txt
+mainsequence_example_dashboards.egg-info/top_level.txt
+tests/test_instruments_direct.py

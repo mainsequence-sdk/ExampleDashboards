@@ -1,0 +1,5 @@
+mainsequence
+python-dotenv
+xlrd
+plotly
+streamlit>=1.50.0

@@ -1,0 +1,10 @@
+Metadata-Version: 2.4
+Name: mainsequence_example_dashboards
+Version: 1.0.0
+Author: Main Sequence GmbH
+Requires-Python: >=3.10.0
+Requires-Dist: mainsequence
+Requires-Dist: python-dotenv
+Requires-Dist: xlrd
+Requires-Dist: plotly
+Requires-Dist: streamlit>=1.50.0

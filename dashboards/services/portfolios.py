@@ -31,6 +31,7 @@ from dashboards.core.data_nodes import get_app_data_nodes
 from mainsequence.instruments.instruments.position import Position
 from .positions import PositionOperations
 import hashlib
+import QuantLib as ql
 # ─────────────────────────────────────────────────────────────────────────────
 # Helper functions (pure; no side effects)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -165,7 +166,7 @@ def latest_snapshot_weights_core(
 
 def _simulate_portfolios_core(
     all_signals: pd.DataFrame,
-    valmer_prices: pd.DataFrame,             # wide DF: columns = unique_identifier
+    prices: pd.DataFrame,             # wide DF: columns = unique_identifier
     lead_returns: Dict[str, float],          # horizon simple-return targets per portfolio
     window: int = 180,                       # trading days for covariance
     N_months: float = 1.0,                   # horizon in months (~21 trading days/month)
@@ -190,11 +191,11 @@ def _simulate_portfolios_core(
         raise ValueError("No portfolios in latest snapshot.")
 
     # ---------- Prices & returns window ----------
-    prices = valmer_prices.sort_index()
+    prices = prices.sort_index()
     union_assets = sorted(set().union(*[set(w.index) for w in weights_by_port.values()]))
     assets_in_prices = [a for a in union_assets if a in prices.columns]
     if not assets_in_prices:
-        raise ValueError("None of the snapshot assets are present in `valmer_prices` columns.")
+        raise ValueError("None of the snapshot assets are present in `prices` columns.")
 
     rets = prices[assets_in_prices].pct_change().loc[:common_end_date]
     rets = rets.tail(max(window * 3, window))
@@ -340,101 +341,7 @@ def match_mask(
     return s.str.contains(pattern, regex=True, na=False)
 
 
-def bucketize_days(days: pd.Series, bucket_days: Sequence[int]) -> tuple[pd.Series, List[str]]:
-    """
-    Convert time-to-maturity in DAYS to labeled categorical buckets.
 
-    Example:
-      bucket_days=[365, 730] -> labels: ["0–365d", "365–730d", ">730d"]
-    """
-    edges = [0] + sorted(set(int(d) for d in bucket_days))
-    bins = [-np.inf] + edges[1:] + [np.inf]
-    labels = [f"{edges[i]}–{edges[i+1]}d" for i in range(len(edges) - 1)] + [f">{edges[-1]}d"]
-    cats = pd.cut(days.clip(lower=0), bins=bins, labels=labels, right=True, include_lowest=True)
-    return cats.astype("category"), labels
-
-
-def weighted_duration_by_maturity_bucket_df(
-    all_signals: pd.DataFrame,
-    maturity_series: pd.Series,
-    duration_series: pd.Series,
-    unique_identifier_filter: Iterable[str],
-    maturity_bucket_days: Sequence[int],
-    *,
-    asof: Union[pd.Timestamp, datetime.datetime, None] = None,
-    case_insensitive: bool = True,
-    match_mode: str = "contains",        # 'contains' catches LF_BONDES in LF_BONDESF
-    lowercase_token_index: bool = True,
-    weighted_mode: str = "contribution", # 'contribution' or 'average'
-) -> pd.DataFrame:
-    """
-    Core computation for maturity-bucketed weighted duration.
-    Returns a MultiIndex DataFrame indexed by (token, maturity_bucket) with a column 'weighted_duration'.
-    """
-    df = all_signals.reset_index()
-    if "unique_identifier" not in df.columns or "signal_weight" not in df.columns:
-        raise KeyError("`all_signals` must contain 'unique_identifier' and 'signal_weight'.")
-
-    # Instrument info mapping
-    m = pd.Series(maturity_series)
-    d = pd.Series(duration_series)
-    info = pd.DataFrame({"unique_identifier": m.index.astype(str)})
-
-    # maturity as datetime (accept Unix seconds or datetime-like)
-    if np.issubdtype(m.dtype, np.number):
-        info["maturity_dt"] = pd.to_datetime(m.values.astype("float64"), unit="s", utc=True, errors="coerce")
-    else:
-        info["maturity_dt"] = pd.to_datetime(m.values, utc=True, errors="coerce")
-    info["duration"] = d.reindex(m.index).values
-
-    # as-of date
-    if asof is None:
-        asof_candidate = m.name if isinstance(m.name, (pd.Timestamp, datetime.datetime)) else None
-        if asof_candidate is None and "time_index" in df.columns:
-            asof_candidate = pd.to_datetime(df["time_index"]).max()
-        if asof_candidate is None:
-            asof_candidate = pd.Timestamp.utcnow()
-        asof = pd.to_datetime(asof_candidate, utc=True)
-
-    # days to maturity
-    info["days_to_mty"] = (info["maturity_dt"] - asof).dt.total_seconds() / (24 * 3600)
-
-    # Merge and precompute contributions
-    merged = df.merge(info, on="unique_identifier", how="left")
-    merged["duration_contrib"] = merged["signal_weight"] * merged["duration"]
-
-    # Bucketize
-    merged["maturity_bucket"], ordered_labels = bucketize_days(merged["days_to_mty"], maturity_bucket_days)
-
-    # Compute per token
-    s_uid = merged["unique_identifier"]
-    results = []
-    for tok in unique_identifier_filter:
-        token_lbl = str(tok).lower() if lowercase_token_index else str(tok)
-        mask = match_mask(s_uid, tok, case_insensitive=case_insensitive, match_mode=match_mode)
-        sub = merged[mask]
-
-        if weighted_mode == "contribution":
-            val = sub.groupby("maturity_bucket", dropna=False, observed=False)["duration_contrib"].sum()
-            val = val.reindex(ordered_labels, fill_value=0.0).rename("weighted_duration")
-        elif weighted_mode == "average":
-            w = sub.groupby("maturity_bucket", dropna=False, observed=False)["signal_weight"].sum().reindex(ordered_labels, fill_value=0.0)
-            wd = sub.groupby("maturity_bucket", dropna=False, observed=False)["duration_contrib"].sum().reindex(ordered_labels, fill_value=0.0)
-            val = pd.Series(np.where(w.values != 0, wd.values / w.values, 0.0),
-                            index=w.index, name="weighted_duration")
-        else:
-            raise ValueError("weighted_mode must be 'contribution' or 'average'")
-
-        block = val.to_frame()
-        block.insert(0, "token", token_lbl)
-        block = block.reset_index().set_index(["token", "maturity_bucket"])
-        results.append(block)
-
-    result = pd.concat(results).sort_index() if results else (
-        pd.DataFrame(columns=["token", "maturity_bucket", "weighted_duration"])
-          .set_index(["token", "maturity_bucket"])
-    )
-    return result
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -461,9 +368,9 @@ class PortfoliosOperations:
     All heavy state is exposed as cached properties to make downstream calls simple.
     """
 
-    def __init__(self, portfolio_list: List[msc.Portfolio], *, valmer_node_identifier: str = "vector_de_precios_valmer"):
+    def __init__(self, portfolio_list: List[msc.Portfolio]):
         self.portfolio_list = portfolio_list
-        self._valmer_node_identifier = valmer_node_identifier
+
 
 
 
@@ -540,7 +447,7 @@ class PortfoliosOperations:
         """
         frames: List[pd.Series] = []
         for p in self.portfolio_list:
-            df = p.local_time_serie.get_data_between_dates_from_api()
+            df = p.data_node_update.get_data_between_dates_from_api()
             if df is None or len(df) == 0:
                 continue
             df = df.copy()
@@ -576,47 +483,25 @@ class PortfoliosOperations:
         """
         if not self.unique_identifiers:
             return None, None, None
-        node = APIDataNode.build_from_identifier(identifier=self._valmer_node_identifier)
+        deps=get_app_data_nodes()
+
+        prices_data_node=deps.get("instrument_pricing_table_id")
+
+
         rd = {uid: {"start_date": self.min_date_signals, "start_date_operand": ">="} for uid in self.unique_identifiers}
-        info = node.get_ranged_data_per_asset(range_descriptor=rd)
-        piv = info.reset_index().pivot
+        prices_df = prices_data_node.get_ranged_data_per_asset(range_descriptor=rd)
+        piv = prices_df.reset_index().pivot
+
+
+
         prices = piv(index="time_index", columns="unique_identifier", values="close")
-        duration = piv(index="time_index", columns="unique_identifier", values="duracion")
-        maturity = piv(index="time_index", columns="unique_identifier", values="fechavcto")
-        return prices, duration, maturity
+
+        return prices
 
     @cached_property
-    def valmer_prices_panel(self) -> pd.DataFrame:
+    def prices_panel(self) -> pd.DataFrame:
         return self._column_panels[0]
 
-    @cached_property
-    def valmer_duration_panel(self) -> pd.DataFrame:
-        return self._column_panels[1]
-
-    @cached_property
-    def valmer_maturity_panel(self) -> pd.DataFrame:
-        return self._column_panels[2]
-
-    # ---------- Convenience snapshots from panels ----------
-    def maturity_snapshot(self, asof: Optional[pd.Timestamp] = None) -> pd.Series:
-        """
-        Snapshot of Valmer 'fechavcto' as of `asof` (UTC now if None).
-        """
-        asof = pd.Timestamp.utcnow().tz_localize("UTC") if asof is None else pd.to_datetime(asof, utc=True)
-        df2 = self.valmer_maturity_panel.copy()
-        df2.index = pd.to_datetime(df2.index, utc=True, errors="raise")
-        sel = df2.loc[df2.index <= asof]
-        return sel.iloc[-1].dropna() if not sel.empty else pd.Series(dtype=float)
-
-    def duration_snapshot(self, asof: Optional[pd.Timestamp] = None) -> pd.Series:
-        """
-        Snapshot of Valmer 'duracion' as of `asof` (UTC now if None).
-        """
-        asof = pd.Timestamp.utcnow().tz_localize("UTC") if asof is None else pd.to_datetime(asof, utc=True)
-        df2 = self.valmer_duration_panel.copy()
-        df2.index = pd.to_datetime(df2.index, utc=True, errors="raise")
-        sel = df2.loc[df2.index <= asof]
-        return sel.iloc[-1].dropna() if not sel.empty else pd.Series(dtype=float)
 
     # ---------- Small utility getters to preserve existing call sites ----------
     def get_min_date_in_signals(self) -> pd.Timestamp:
@@ -748,84 +633,6 @@ class PortfoliosOperations:
 
         return agg_df if return_df else None
 
-    # ---------- Maturity buckets ----------
-    def weighted_duration_by_maturity_bucket_table(
-        self,
-        maturity_series: Optional[pd.Series],
-        duration_series: Optional[pd.Series],
-        unique_identifier_filter: Iterable[str],
-        maturity_bucket_days: Sequence[int],
-        *,
-        signals: Optional[pd.DataFrame] = None,  # allow per-portfolio slice
-        case_insensitive: bool = True,
-        match_mode: str = "contains",
-        lowercase_token_index: bool = True,
-        weighted_mode: str = "contribution",
-        percent: bool = True,  # display as % share by bucket (default)
-        decimals: int = 2,
-        title: Optional[str] = None,
-        render: bool = True,  # set False to only get the df back
-        return_df: bool = False,  # if True, return the RAW df from the builder
-    ) -> Optional[pd.DataFrame]:
-        """
-        Build and (optionally) render a Streamlit table of weighted durations by maturity bucket.
-        - If `percent=True`, shows share of weighted_duration per group across buckets.
-          Grouping priority: ['portfolio_name', 'token'] if present; else ['token']; else all rows.
-        - Returns the RAW df from the builder when `return_df=True`.
-        """
-        # Default to internal snapshots if not provided
-        if maturity_series is None:
-            maturity_series = self.maturity_snapshot()
-        if duration_series is None:
-            duration_series = self.duration_snapshot()
-
-        raw = weighted_duration_by_maturity_bucket_df(
-            all_signals=(self.signals if signals is None else signals),
-            maturity_series=maturity_series,
-            duration_series=duration_series,
-            unique_identifier_filter=unique_identifier_filter,
-            maturity_bucket_days=maturity_bucket_days,
-            case_insensitive=case_insensitive,
-            match_mode=match_mode,
-            lowercase_token_index=lowercase_token_index,
-            weighted_mode=weighted_mode,
-        )
-
-        disp = raw.reset_index(drop=False).copy()
-
-        # If nothing to show, render empty df gracefully
-        if "weighted_duration" not in disp.columns or disp.empty:
-            if render:
-                if title:
-                    st.subheader(title)
-                st.dataframe(disp, use_container_width=True)
-            return raw if return_df else None
-
-        if percent:
-            group_cols: List[str] = []
-            if "portfolio_name" in disp.columns:
-                group_cols.append("portfolio_name")
-            if "token" in disp.columns:
-                group_cols.append("token")
-
-            if group_cols:
-                denom = disp.groupby(group_cols)["weighted_duration"].transform("sum").replace(0, pd.NA)
-            else:
-                total = disp["weighted_duration"].sum()
-                denom = pd.Series([total] * len(disp), index=disp.index).replace(0, pd.NA)
-
-            disp["weighted_duration"] = (disp["weighted_duration"] / denom).astype(float)
-            disp.rename(columns={"weighted_duration": "weighted_duration_share"}, inplace=True)
-            disp["weighted_duration_share"] = _format_to_percent_strings(disp["weighted_duration_share"], decimals)
-        else:
-            disp["weighted_duration"] = _format_to_numeric_strings(disp["weighted_duration"], decimals)
-
-        if render:
-            if title:
-                st.subheader(title)
-            st.dataframe(disp, use_container_width=True)
-
-        return raw if return_df else None
 
     # ---------- Simulation & Rolling leaders ----------
     def simulate_portfolios_centered_on_targets(
@@ -850,10 +657,10 @@ class PortfoliosOperations:
         -------
         summary_df, rank_df, sim_ports, assets_final, portfolios, fig_iqr, fig_rank
         """
-        vp = self.valmer_prices_panel if valmer_prices is None else valmer_prices
+        vp = self.prices_panel if valmer_prices is None else valmer_prices
         summary_df, rank_df, sim_ports, assets_final, portfolios = _simulate_portfolios_core(
             all_signals=self.signals,
-            valmer_prices=vp,
+            prices=vp,
             lead_returns=lead_returns,
             window=window,
             N_months=N_months,
@@ -1402,3 +1209,154 @@ class PortfoliosOperations:
             mime="text/csv",
             key=f"{_scoped_key(key, position)}_csv",
         )
+
+    def st_weighted_duration_buckets_by_type(
+            self,
+            *,
+            position: "Position",
+            portfolio_name: str,
+            valuation_date: datetime.date,
+            identifier_filters: tuple[str, ...],  # may be empty -> one row per UID
+            maturity_bucket_days: tuple[int, ...] = (365, 730, 1825),
+            decimals: int = 2,
+            instrument_hash_to_asset: dict,  # content_hash() -> Asset(with .unique_identifier)
+            key: str | None = None,
+            return_df: bool = False,
+    ):
+        """
+        Index = (portfolio_name, row_label)
+          - row_label = token (when filters provided), else row_label = unique_identifier
+        Columns = maturity buckets (days)
+        Values  = signal_weight * modified_duration (QuantLib, Modified)
+        """
+
+        # — latest weights for this portfolio -> {uid: weight} —
+        sig = self.signals.reset_index()
+        sig = sig[sig["portfolio_name"] == portfolio_name]
+        weight_map = sig.groupby("unique_identifier")["signal_weight"].sum().astype(float).to_dict()
+
+        # — buckets —
+        edges = [0] + sorted({int(x) for x in maturity_bucket_days})
+        labels = [f"{edges[i]}–{edges[i + 1]}d" for i in range(len(edges) - 1)] + [f">{edges[-1]}d"]
+
+        def bucket_for(days: int) -> str:
+            for i in range(len(edges) - 1):
+                if edges[i] <= days <= edges[i + 1]:
+                    return f"{edges[i]}–{edges[i + 1]}d"
+            return f">{edges[-1]}d"
+
+        # — filter mode vs per‑instrument mode —
+        tokens = [t.strip() for t in identifier_filters if t.strip()]
+        using_filters = len(tokens) > 0
+        second_index_name = "instrument_filter" if using_filters else "unique_identifier"
+
+        # — build rows —
+        rows: list[dict] = []
+        for ln in position.lines:
+            inst = ln.instrument
+
+            # weight lookup via hash -> Asset -> unique_identifier
+            h = inst.content_hash()
+            uid = str(instrument_hash_to_asset[h].unique_identifier)
+            w = float(weight_map.get(uid, 0.0))  # if UID isn't in snapshot, weight = 0.0
+
+            # maturity bucket
+            mty: datetime.date = inst.maturity_date
+            days_to_mty = max(0, (mty - valuation_date).days)
+            bkt = bucket_for(days_to_mty)
+
+            # QuantLib yield & modified duration
+            qb: ql.Bond = inst.get_bond()
+            dcc: ql.DayCounter = inst.day_count
+            freq: ql.Frequency = inst.coupon_frequency.frequency()
+            comp = ql.Compounded
+            bp = ql.BondPrice(float(qb.cleanPrice()), ql.BondPrice.Clean)
+            settle = qb.settlementDate()
+            ytm = qb.bondYield(bp, dcc, comp, freq, settle)
+            dur_mod = float(ql.BondFunctions.duration(qb, ytm, dcc, comp, freq, ql.Duration.Modified))
+
+            if using_filters:
+                uid_l = uid.lower()
+                for tok in tokens:
+                    if tok.lower() in uid_l:  # case-insensitive contains
+                        rows.append({
+                            "portfolio_name": portfolio_name,
+                            second_index_name: tok,  # token as the second index label
+                            "bucket": bkt,
+                            "weighted_duration": w * dur_mod,
+                        })
+            else:
+                # no filters -> one row per instrument UID
+                rows.append({
+                    "portfolio_name": portfolio_name,
+                    second_index_name: uid,  # UID as the second index label
+                    "bucket": bkt,
+                    "weighted_duration": w * dur_mod,
+                })
+
+        df = pd.DataFrame(rows)
+
+        # — build a full table, including zero rows for tokens with no matches —
+        if using_filters:
+            expected_index = pd.MultiIndex.from_product(
+                [[portfolio_name], tokens],
+                names=["portfolio_name", second_index_name],
+            )
+            if df.empty:
+                table = pd.DataFrame(0.0, index=expected_index, columns=labels)
+            else:
+                table = (
+                    df.pivot_table(
+                        index=["portfolio_name", second_index_name],
+                        columns="bucket",
+                        values="weighted_duration",
+                        aggfunc="sum",
+                        fill_value=0.0,
+                        observed=False,
+                    )
+                    .reindex(index=expected_index, columns=labels, fill_value=0.0)
+                    .sort_index()
+                )
+        else:
+            # per‑instrument (UID) mode; only instruments in the position appear as rows
+            if df.empty:
+                table = pd.DataFrame(columns=labels).astype(float)
+                table.index = pd.MultiIndex.from_product(
+                    [[portfolio_name], []],
+                    names=["portfolio_name", second_index_name],
+                )
+            else:
+                table = (
+                    df.pivot_table(
+                        index=["portfolio_name", second_index_name],
+                        columns="bucket",
+                        values="weighted_duration",
+                        aggfunc="sum",
+                        fill_value=0.0,
+                        observed=False,
+                    )
+                    .reindex(columns=labels, fill_value=0.0)
+                    .sort_index()
+                )
+
+        # — render —
+        disp = table.astype(float).round(decimals)
+        fmt = f"%.{decimals}f"
+        col_cfg = {c: st.column_config.NumberColumn(c, format=fmt) for c in disp.columns}
+
+        st.subheader("Weighted Duration × Maturity Bucket")
+        if using_filters:
+            st.caption("Rows = filter tokens (UID contains); Cell = portfolio_position_weight × modified_duration.")
+        else:
+            st.caption("Rows = instrument unique_identifier; Cell = portfolio_position_weight × modified_duration.")
+
+        st.dataframe(disp, width="stretch", column_config=col_cfg)
+        st.download_button(
+            "Download CSV",
+            data=disp.reset_index().to_csv(index=False).encode("utf-8"),
+            file_name=f"wd_buckets_{portfolio_name.replace(' ', '_')}.csv",
+            mime="text/csv",
+            key=key or f"wd_buckets_{portfolio_name}",
+        )
+
+        return table if return_df else None

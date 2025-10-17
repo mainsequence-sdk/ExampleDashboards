@@ -95,7 +95,7 @@ def _ensure_data_nodes() -> None:
     try:
         deps.get("instrument_pricing_table_id")
     except KeyError:
-        from dashboards.apps.bond_portfolio_analysis.settings import PRICES_TABLE_NAME
+        from dashboards.apps.portfolio_competition_analysis.settings import PRICES_TABLE_NAME
         deps.register(instrument_pricing_table_id=PRICES_TABLE_NAME)
     st.session_state["_deps_bootstrapped"] = True
 
@@ -286,6 +286,9 @@ with impact_tab:
                 bumped_position=bumped_pos,
             )
 
+            st.session_state.setdefault("_base_positions_by_id", {})[pid] = base_pos
+            st.session_state.setdefault("_id_to_name", {})[pid] = id_to_name[pid]
+
             one_po = PortfoliosOperations(portfolio_list=[ports_by_id.get(pid)]) if ports_by_id.get(pid) else None
             if one_po is None:
                 continue
@@ -368,118 +371,42 @@ with tab_weights:
 
 # 4) ── Maturity buckets  (competition_view.py: tabs[1] content)
 with tab_maturity:
+    st.subheader("Weighted duration by filter × maturity bucket")
 
-    if not po_all:
-        st.info("Select one or more portfolios to compute maturity buckets.")
+    # Filters input
+    default_wd_filters_csv = "FIXED,FLOAT"
+    filters_csv = st.text_input(
+        "Instrument filters (UID contains, comma‑separated)",
+        key="wd_filters_csv",
+        value=st.session_state.get("wd_filters_csv", default_wd_filters_csv),
+        placeholder="e.g., FIXED,FLOAT,91",
+    )
+    # Empty input => function aggregates ALL assets under a single 'All' row
+    filters = tuple(t.strip() for t in (filters_csv or "").split(",") if t.strip())
+
+    # Use the positions built in Portfolios Impact
+    base_positions_by_id = st.session_state.get("_base_positions_by_id", {})
+    id_to_name = st.session_state.get("_id_to_name", {int(pid): getattr(ports_by_id[int(pid)], "portfolio_name", f"Portfolio {pid}") for pid in ordered_ids})
+
+    if not base_positions_by_id:
+        st.info("Base positions are not available yet. Open the **Portfolios Impact** tab first.")
     else:
-        st.subheader("Weighted duration by maturity bucket")
-        # Snapshot disclosure based on valuation_date
-        asof_utc = pd.Timestamp(valuation_date).tz_localize("UTC")
-        snap_m = po_all.maturity_snapshot(asof=valuation_date).name
-        snap_d = po_all.duration_snapshot(asof=valuation_date).name
+        maturity_tabs = st.tabs([id_to_name[int(pid)] for pid in ordered_ids])
 
-        snap_m_utc = pd.Timestamp(snap_m).tz_convert("UTC") if snap_m is not None else None
-        snap_d_utc = pd.Timestamp(snap_d).tz_convert("UTC") if snap_d is not None else None
-        snap_used_utc = None
-        if snap_m_utc is not None or snap_d_utc is not None:
-            candidates = [d for d in [snap_m_utc, snap_d_utc] if d is not None]
-            snap_used_utc = max(candidates)
-            if snap_m_utc is not None and snap_d_utc is not None and snap_m_utc.date() != snap_d_utc.date():
-                st.caption(
-                    f"maturity **{snap_m_utc.strftime('%Y-%m-%d')} UTC**, "
-                    f"duration **{snap_d_utc.strftime('%Y-%m-%d')} UTC**; "
-                    f"analysis date = **{snap_used_utc.strftime('%Y-%m-%d')} UTC** "
-                    f"(last available ≤ Valuation **{asof_utc.strftime('%Y-%m-%d')} UTC**)."
+        for pid, tab in zip(ordered_ids, maturity_tabs):
+            pid = int(pid)
+            with tab:
+                base_pos = base_positions_by_id[pid]  # <-- reuse, no re-instantiation
+                po_all.st_weighted_duration_buckets_by_type(
+                    position=base_pos,
+                    portfolio_name=id_to_name[pid],
+                    valuation_date=valuation_date,
+                    identifier_filters=filters,                      # drives the 2nd index
+                    maturity_bucket_days=(365, 730, 1825),
+                    decimals=2,
+                    instrument_hash_to_asset=st.session_state["instrument_hash_to_asset"],
+                    key=f"wd_buckets_{pid}_{iso_date}",
                 )
-            else:
-                st.caption(
-                    f"Using snapshot **{snap_used_utc.strftime('%Y-%m-%d')} UTC** "
-                    f"(last available <= As-of **{asof_utc.strftime('%Y-%m-%d')} UTC**)."
-                )
-
-        default_buckets_csv = "365,730,1825"
-        default_weighted_mode = "contribution"
-        c1, c2 = st.columns([2, 1])
-        with c1:
-            st.text_input(
-                "Maturity bucket edges (days, comma-sep)",
-                key="buckets_csv",
-                value=st.session_state.get("buckets_csv", default_buckets_csv),
-                placeholder="e.g., 365,730,1825",
-            )
-        with c2:
-            WM_OPTS = ["contribution", "average"]
-            st.selectbox(
-                "Weighted duration mode",
-                WM_OPTS,
-                index=WM_OPTS.index(st.session_state.get("weighted_mode", default_weighted_mode)),
-                key="weighted_mode",
-            )
-
-        maturity_s = po_all.maturity_snapshot(asof=valuation_date)
-        duration_s = po_all.duration_snapshot(asof=valuation_date)
-        if maturity_s.empty or duration_s.empty:
-            st.info("Maturity/duration snapshots not available at selected As-of.")
-        else:
-            buckets_csv_val = st.session_state.get("buckets_csv", default_buckets_csv)
-            try:
-                maturity_buckets = [int(x.strip()) for x in buckets_csv_val.split(",") if x.strip()]
-            except Exception:
-                maturity_buckets = [int(x) for x in default_buckets_csv.split(",")]
-
-            tokens_csv_val = st.session_state.get("tokens_csv", "91,M_BONOS,S_UDIBONO,LF_BONDES")
-            tokens = [t.strip() for t in tokens_csv_val.split(",") if t.strip()]
-
-            all_bucket_dfs: List[pd.DataFrame] = []
-            portfolios = po_all.signals.index.get_level_values("portfolio_name").unique()
-            for portfolio in portfolios:
-                signals_for_portfolio = po_all.signals.loc[pd.IndexSlice[:, portfolio], :]
-                if signals_for_portfolio.empty:
-                    continue
-                raw_df = po_all.weighted_duration_by_maturity_bucket_table(
-                    maturity_series=maturity_s,
-                    duration_series=duration_s,
-                    unique_identifier_filter=tokens,
-                    maturity_bucket_days=maturity_buckets,
-                    signals=signals_for_portfolio,
-                    case_insensitive=st.session_state.get("case_insensitive", True),
-                    match_mode=st.session_state.get("match_mode", "contains"),
-                    lowercase_token_index=True,
-                    weighted_mode=st.session_state.get("weighted_mode", default_weighted_mode),
-                    percent=False, decimals=2, title=None, render=False, return_df=True)
-
-                if isinstance(raw_df, pd.DataFrame) and not raw_df.empty:
-                    part = raw_df.reset_index(drop=False).copy()
-                    part["portfolio_name"] = portfolio
-                    all_bucket_dfs.append(part)
-
-            if all_bucket_dfs:
-                combined_bkt_df = pd.concat(all_bucket_dfs, axis=0, ignore_index=True)
-                analysis_date_str = snap_used_utc.strftime("%Y-%m-%d") if snap_used_utc is not None else None
-                combined_bkt_df["snapshot_date"] = analysis_date_str
-
-                wd = pd.to_numeric(combined_bkt_df["weighted_duration"], errors="coerce")
-                denom = combined_bkt_df.groupby(["portfolio_name", "token"])["weighted_duration"].transform("sum")
-                den = pd.to_numeric(denom, errors="coerce").replace(0, np.nan)
-                pct = (wd / den).replace([np.inf, -np.inf], np.nan)
-                combined_bkt_df["weighted_duration_pct"] = pct * 100.0
-
-                cols_disp = ["portfolio_name", "snapshot_date", "token", "maturity_bucket", "weighted_duration_pct"]
-                cols_disp = [c for c in cols_disp if c in combined_bkt_df.columns]
-                disp = combined_bkt_df[cols_disp].copy()
-                st.dataframe(
-                    disp,
-                    width="stretch",
-                    hide_index=True,
-                    column_config={
-                        "snapshot_date": "Snapshot",
-                        "weighted_duration_pct": st.column_config.NumberColumn("Weighted duration (%)", format="%.2f"),
-                    },
-                )
-                with st.expander("Show data (raw)"):
-                    st.dataframe(combined_bkt_df, width="stretch")
-            else:
-                st.info("No maturity bucket data to display for the selected funds.")
 
 # 5) ── Rolling leaders  (competition_view.py: tabs[2] content)
 with tab_leaders:
@@ -527,8 +454,8 @@ with tab_corr:
         if po_all.prices.shape[1] <= 1:
             st.info("Need at least two portfolios with price history.")
         else:
-            prices_for_plots = comp_ctx.portfolio_prices
-            _, _, fig_heat, fig_dend = plot_serialized_correlation(po_all.prices, mode="returns")
+            prices_for_plots = po_all.prices
+            _, _, fig_heat, fig_dend = plot_serialized_correlation(prices_for_plots, mode="returns")
 
             c1, c2 = st.columns(2)
             with c1:
@@ -538,140 +465,142 @@ with tab_corr:
 
 # 7) ── Simulation  (competition_view.py: tabs[4] content)
 with tab_sim:
-    if not po_all:
-        st.info("Select one or more portfolios to run the simulation.")
-    else:
-        st.subheader("Simulation (notebook parity)")
-        default_sim_window = 180
-        default_sim_min_obs = 120
-        default_sim_months = 3
-        default_sim_samples = 20000
-        default_sim_norm = "sum"
-        default_sim_excess = True
-
-        st.markdown("**Simulation settings**")
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            st.number_input("Lookback window (days)", min_value=60, max_value=1500, step=5,
-                            value=int(st.session_state.get("sim_window", default_sim_window)), key="sim_window")
-            st.number_input("Min obs per asset", min_value=60, max_value=2000, step=10,
-                            value=int(st.session_state.get("sim_min_obs", default_sim_min_obs)), key="sim_min_obs")
-        with c2:
-            st.number_input("Horizon (months)", min_value=1, max_value=24, step=1,
-                            value=int(st.session_state.get("sim_N_months", default_sim_months)), key="sim_N_months")
-            NORM_OPTS = ["sum", "none"]
-            st.selectbox("Normalize weights", NORM_OPTS,
-                         index=NORM_OPTS.index(st.session_state.get("sim_norm", default_sim_norm)), key="sim_norm")
-        with c3:
-            st.number_input("Number of simulations", min_value=1000, max_value=200000, step=1000,
-                            value=int(st.session_state.get("sim_samples", default_sim_samples)), key="sim_samples")
-            st.checkbox("Plot excess over target (center at 0)",
-                        value=st.session_state.get("sim_excess", default_sim_excess), key="sim_excess")
-
-        lead = {}
-        try:
-            lead = po_all.get_leading_portfolios(po_all.prices)
-        except Exception as e:
-            st.error(f"Failed to compute lead (target) returns: {e}")
-
-        if not lead:
-            st.info("Lead/target returns not available; cannot run simulation.")
-        else:
-            try:
-                summary_df, rank_df, sim_ports, _, _, fig_iqr, fig_rank = po_all.simulate_portfolios_centered_on_targets(
-                    valmer_prices=None,
-                    lead_returns=lead,
-                    window=int(st.session_state.get("sim_window", default_sim_window)),
-                    N_months=int(st.session_state.get("sim_N_months", default_sim_months)),
-                    samples=int(st.session_state.get("sim_samples", default_sim_samples)),
-                    normalize_weights=st.session_state.get("sim_norm", default_sim_norm),
-                    min_obs_per_asset=int(st.session_state.get("sim_min_obs", default_sim_min_obs)),
-                )
-                if isinstance(summary_df, pd.DataFrame) and not summary_df.empty:
-                    sum_disp = summary_df.copy()
-                    pct_keys = ("ret", "mean", "p", "prob", "quant", "median")
-                    for c in sum_disp.columns:
-                        if any(k in c.lower() for k in pct_keys) and pd.api.types.is_numeric_dtype(sum_disp[c]):
-                            sum_disp[c] = sum_disp[c] * 100.0
-                    st.subheader("Simulation Summary")
-                    st.dataframe(sum_disp, width="stretch")
-
-                if isinstance(rank_df, pd.DataFrame) and not rank_df.empty:
-                    rank_disp = rank_df.copy()
-                    for c in rank_disp.columns:
-                        if any(k in c.lower() for k in ("rank", "prob", "p")) and pd.api.types.is_numeric_dtype(rank_disp[c]):
-                            rank_disp[c] = rank_disp[c] * 100.0
-                    st.subheader("Rank Probabilities")
-                    st.dataframe(rank_disp, width="stretch")
-
-                if fig_iqr:
-                    st.plotly_chart(fig_iqr, width="stretch")
-                if fig_rank:
-                    st.plotly_chart(fig_rank, width="stretch")
-            except Exception as e:
-                st.error(f"Simulation failed: {e}")
+    # if not po_all:
+    #     st.info("Select one or more portfolios to run the simulation.")
+    # else:
+    #     st.subheader("Simulation (notebook parity)")
+    #     default_sim_window = 180
+    #     default_sim_min_obs = 120
+    #     default_sim_months = 3
+    #     default_sim_samples = 20000
+    #     default_sim_norm = "sum"
+    #     default_sim_excess = True
+    #
+    #     st.markdown("**Simulation settings**")
+    #     c1, c2, c3 = st.columns(3)
+    #     with c1:
+    #         st.number_input("Lookback window (days)", min_value=60, max_value=1500, step=5,
+    #                         value=int(st.session_state.get("sim_window", default_sim_window)), key="sim_window")
+    #         st.number_input("Min obs per asset", min_value=60, max_value=2000, step=10,
+    #                         value=int(st.session_state.get("sim_min_obs", default_sim_min_obs)), key="sim_min_obs")
+    #     with c2:
+    #         st.number_input("Horizon (months)", min_value=1, max_value=24, step=1,
+    #                         value=int(st.session_state.get("sim_N_months", default_sim_months)), key="sim_N_months")
+    #         NORM_OPTS = ["sum", "none"]
+    #         st.selectbox("Normalize weights", NORM_OPTS,
+    #                      index=NORM_OPTS.index(st.session_state.get("sim_norm", default_sim_norm)), key="sim_norm")
+    #     with c3:
+    #         st.number_input("Number of simulations", min_value=1000, max_value=200000, step=1000,
+    #                         value=int(st.session_state.get("sim_samples", default_sim_samples)), key="sim_samples")
+    #         st.checkbox("Plot excess over target (center at 0)",
+    #                     value=st.session_state.get("sim_excess", default_sim_excess), key="sim_excess")
+    #
+    #     lead = {}
+    #     try:
+    #         lead = po_all.get_leading_portfolios(po_all.prices)
+    #     except Exception as e:
+    #         st.error(f"Failed to compute lead (target) returns: {e}")
+    #
+    #     if not lead:
+    #         st.info("Lead/target returns not available; cannot run simulation.")
+    #     else:
+    #         try:
+    #             summary_df, rank_df, sim_ports, _, _, fig_iqr, fig_rank = po_all.simulate_portfolios_centered_on_targets(
+    #                 valmer_prices=None,
+    #                 lead_returns=lead,
+    #                 window=int(st.session_state.get("sim_window", default_sim_window)),
+    #                 N_months=int(st.session_state.get("sim_N_months", default_sim_months)),
+    #                 samples=int(st.session_state.get("sim_samples", default_sim_samples)),
+    #                 normalize_weights=st.session_state.get("sim_norm", default_sim_norm),
+    #                 min_obs_per_asset=int(st.session_state.get("sim_min_obs", default_sim_min_obs)),
+    #             )
+    #             if isinstance(summary_df, pd.DataFrame) and not summary_df.empty:
+    #                 sum_disp = summary_df.copy()
+    #                 pct_keys = ("ret", "mean", "p", "prob", "quant", "median")
+    #                 for c in sum_disp.columns:
+    #                     if any(k in c.lower() for k in pct_keys) and pd.api.types.is_numeric_dtype(sum_disp[c]):
+    #                         sum_disp[c] = sum_disp[c] * 100.0
+    #                 st.subheader("Simulation Summary")
+    #                 st.dataframe(sum_disp, width="stretch")
+    #
+    #             if isinstance(rank_df, pd.DataFrame) and not rank_df.empty:
+    #                 rank_disp = rank_df.copy()
+    #                 for c in rank_disp.columns:
+    #                     if any(k in c.lower() for k in ("rank", "prob", "p")) and pd.api.types.is_numeric_dtype(rank_disp[c]):
+    #                         rank_disp[c] = rank_disp[c] * 100.0
+    #                 st.subheader("Rank Probabilities")
+    #                 st.dataframe(rank_disp, width="stretch")
+    #
+    #             if fig_iqr:
+    #                 st.plotly_chart(fig_iqr, width="stretch")
+    #             if fig_rank:
+    #                 st.plotly_chart(fig_rank, width="stretch")
+    #         except Exception as e:
+    #             st.error(f"Simulation failed: {e}")
+    pass
 
 # 8) ── Status  (competition_view.py: tabs[5] content)
 with tab_status:
-    if comp_ctx is None:
-        st.info("Competition context not available. Provide `competition_ctx` in `st.session_state`.")
-    else:
-        st.subheader("Status Overview")
-        if comp_ctx.all_signals_mi.empty:
-            st.warning("No holdings data found for the selected peer group. Cannot display status.")
-        else:
-            status_df = comp_ctx.peers_df.copy()
-            loaded_funds = comp_ctx.all_signals_mi.index.get_level_values("portfolio_name").unique().tolist()
-            status_df_filtered = status_df[status_df["Fondo"].isin(loaded_funds)] if "Fondo" in status_df.columns else status_df
-
-            latest_holdings = (
-                comp_ctx.all_signals_mi.reset_index()
-                .groupby("portfolio_name")
-                .agg(latest_holdings_date=("time_index", "first"), total_weight=("signal_weight", "sum"))
-            )
-            merged_df = pd.merge(
-                status_df_filtered,
-                latest_holdings,
-                left_on=getattr(comp_ctx, "COL_FONDO", "Fondo"),
-                right_index=True,
-                how="left",
-            )
-
-            date_cols = ["last_run_time", "pdf_last_update", "fund_price_last_update"]
-            for col in date_cols:
-                if col in merged_df.columns:
-                    merged_df[col] = pd.to_datetime(merged_df[col], errors="coerce")
-            for col in merged_df.select_dtypes(include=["datetimetz"]).columns:
-                merged_df[col] = merged_df[col].dt.tz_localize(None)
-            if "latest_holdings_date" in merged_df.columns and pd.api.types.is_datetime64_any_dtype(merged_df["latest_holdings_date"]):
-                if getattr(merged_df["latest_holdings_date"].dt, "tz", None) is not None:
-                    merged_df["latest_holdings_date"] = merged_df["latest_holdings_date"].dt.tz_localize(None)
-
-            display_cols = {
-                "Operadora": "Operadora",
-                "Fondo": "Fondo",
-                "last_run_time": "Last Scrape",
-                "pdf_last_update": "PDF Date",
-                "fund_price_last_update": "Price Date",
-                "latest_holdings_date": "Holdings Date",
-                "Link Cartera Semanal": "Weekly Report",
-            }
-            existing_display_cols_keys = [k for k in display_cols if k in merged_df.columns]
-            display_df = merged_df[existing_display_cols_keys].rename(columns=display_cols)
-
-            def _hl_nan(row):
-                is_na = row.isnull().any()
-                return ["background-color: #e62e2e; color: white" if is_na else "" for _ in row]
-
-            st.dataframe(
-                display_df.style.apply(_hl_nan, axis=1),
-                width="stretch",
-                hide_index=True,
-                column_config={
-                    "Weekly Report": st.column_config.LinkColumn("Link", display_text="🔗 Document Link"),
-                    "Last Scrape": st.column_config.DatetimeColumn("Last Scrape", format="YYYY-MM-DD HH:mm"),
-                    "PDF Date": st.column_config.DatetimeColumn("PDF Date", format="YYYY-MM-DD"),
-                    "Price Date": st.column_config.DatetimeColumn("Price Date", format="YYYY-MM-DD"),
-                    "Holdings Date": st.column_config.DatetimeColumn("Holdings Date", format="YYYY-MM-DD"),
-                },
-            )
+    # if comp_ctx is None:
+    #     st.info("Competition context not available. Provide `competition_ctx` in `st.session_state`.")
+    # else:
+    #     st.subheader("Status Overview")
+    #     if comp_ctx.all_signals_mi.empty:
+    #         st.warning("No holdings data found for the selected peer group. Cannot display status.")
+    #     else:
+    #         status_df = comp_ctx.peers_df.copy()
+    #         loaded_funds = comp_ctx.all_signals_mi.index.get_level_values("portfolio_name").unique().tolist()
+    #         status_df_filtered = status_df[status_df["Fondo"].isin(loaded_funds)] if "Fondo" in status_df.columns else status_df
+    #
+    #         latest_holdings = (
+    #             comp_ctx.all_signals_mi.reset_index()
+    #             .groupby("portfolio_name")
+    #             .agg(latest_holdings_date=("time_index", "first"), total_weight=("signal_weight", "sum"))
+    #         )
+    #         merged_df = pd.merge(
+    #             status_df_filtered,
+    #             latest_holdings,
+    #             left_on=getattr(comp_ctx, "COL_FONDO", "Fondo"),
+    #             right_index=True,
+    #             how="left",
+    #         )
+    #
+    #         date_cols = ["last_run_time", "pdf_last_update", "fund_price_last_update"]
+    #         for col in date_cols:
+    #             if col in merged_df.columns:
+    #                 merged_df[col] = pd.to_datetime(merged_df[col], errors="coerce")
+    #         for col in merged_df.select_dtypes(include=["datetimetz"]).columns:
+    #             merged_df[col] = merged_df[col].dt.tz_localize(None)
+    #         if "latest_holdings_date" in merged_df.columns and pd.api.types.is_datetime64_any_dtype(merged_df["latest_holdings_date"]):
+    #             if getattr(merged_df["latest_holdings_date"].dt, "tz", None) is not None:
+    #                 merged_df["latest_holdings_date"] = merged_df["latest_holdings_date"].dt.tz_localize(None)
+    #
+    #         display_cols = {
+    #             "Operadora": "Operadora",
+    #             "Fondo": "Fondo",
+    #             "last_run_time": "Last Scrape",
+    #             "pdf_last_update": "PDF Date",
+    #             "fund_price_last_update": "Price Date",
+    #             "latest_holdings_date": "Holdings Date",
+    #             "Link Cartera Semanal": "Weekly Report",
+    #         }
+    #         existing_display_cols_keys = [k for k in display_cols if k in merged_df.columns]
+    #         display_df = merged_df[existing_display_cols_keys].rename(columns=display_cols)
+    #
+    #         def _hl_nan(row):
+    #             is_na = row.isnull().any()
+    #             return ["background-color: #e62e2e; color: white" if is_na else "" for _ in row]
+    #
+    #         st.dataframe(
+    #             display_df.style.apply(_hl_nan, axis=1),
+    #             width="stretch",
+    #             hide_index=True,
+    #             column_config={
+    #                 "Weekly Report": st.column_config.LinkColumn("Link", display_text="🔗 Document Link"),
+    #                 "Last Scrape": st.column_config.DatetimeColumn("Last Scrape", format="YYYY-MM-DD HH:mm"),
+    #                 "PDF Date": st.column_config.DatetimeColumn("PDF Date", format="YYYY-MM-DD"),
+    #                 "Price Date": st.column_config.DatetimeColumn("Price Date", format="YYYY-MM-DD"),
+    #                 "Holdings Date": st.column_config.DatetimeColumn("Holdings Date", format="YYYY-MM-DD"),
+    #             },
+    #         )
+    pass

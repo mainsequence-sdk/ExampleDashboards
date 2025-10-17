@@ -280,23 +280,18 @@ def build_test_portfolio_with_signals():
 
     assets = ensure_test_assets()
     # Instantiate and update the DataNode (platform would orchestrate this)
-    # prices_node = SimulatedDailyClosePrices(asset_list=assets)
-    # prices_node.run(debug_mode=True, force_update=True)
+    prices_node = SimulatedDailyClosePrices(asset_list=assets)
+    prices_node.run(debug_mode=True, force_update=True)
 
+    # Get or create the asset category
     asset_category=msc.AssetCategory.get_or_create(display_name="Mock Category Assets Tutorial",
                                     unique_identifier="mock_category_assets_tutorial",
                                     )
+    #add assets to the category
     asset_category.append_assets(assets=assets)
 
-    weights= [.4, .6]
-    node_weights_input_1,node_weights_input_2 =[], []
-    for c, a in enumerate(assets):
-        node_weights_input_1.append(AUIDWeight(unique_identifier=a.unique_identifier,
-                                               weight=weights[c]))
-        node_weights_input_2.append(AUIDWeight(unique_identifier=a.unique_identifier,
-                                               weight=weights[c]*1.05))
 
-
+    #Craate Translation Table to link assets to pricing table
     translation_table=msc.AssetTranslationTable.get_or_create(translation_table_identifier=TRANSLATION_TABLE_IDENTIFIER,
                       rules=[
                                 msc.AssetTranslationRule(
@@ -308,6 +303,17 @@ def build_test_portfolio_with_signals():
 
                             ]
                                                               )
+
+    # build Fixed Weights Portfolio Data Node
+    weights= [.4, .6]
+    node_weights_input_1,node_weights_input_2 =[], []
+    for c, a in enumerate(assets):
+        node_weights_input_1.append(AUIDWeight(unique_identifier=a.unique_identifier,
+                                               weight=weights[c]))
+        node_weights_input_2.append(AUIDWeight(unique_identifier=a.unique_identifier,
+                                               weight=weights[c]*1.05))
+
+
 
 
     prices_configuration=PricesConfiguration(bar_frequency_id = "1d",
@@ -405,4 +411,3 @@ def build_test_portfolio(portfolio_name:str):
                       description="Mock Portfolio Group for Tutorial")
 
 
-build_test_portfolio_with_signals()
