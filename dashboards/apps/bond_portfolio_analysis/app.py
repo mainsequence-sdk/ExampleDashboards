@@ -21,12 +21,12 @@ st.caption("Use the sidebar to open a page.")
 
 # You can add quick links:
 try:
-    st.link_button("Open Curve, Stats & Positions", url="pages/01_Curve_Stats_Positions")
-    st.link_button("Open Data Nodes", url="pages/02_Data_Nodes_Graph")
+    st.page_link("pages/01_curve_and_positions.py", label="Open Curve, Stats & Positions")
+    st.page_link("pages/02_data_nodes_dependencies.py", label="Open Data Nodes")
 except Exception:
-    # Fallback for older Streamlit (no link_button)
-    st.markdown("- [Curve, Stats & Positions](pages/01_Curve_Stats_Positions)")
-    st.markdown("- [Data Nodes](pages/02_Data_Nodes_Graph)")
+    # Fallback for older Streamlit (no page_link)
+    st.markdown("- [Curve, Stats & Positions](pages/01_curve_and_positions)")
+    st.markdown("- [Data Nodes](pages/02_data_nodes_dependencies)")
 
 st.info(
     "This template uses Streamlit’s native multipage routing. "
